@@ -96,6 +96,7 @@ function setupSpreadsheet() {
 
   ensureConfigDefaults_();
   ensureDefaultCategories_();
+  ensureImportMapDefaults_();
 }
 
 function ensureSheet_(name, headers) {
@@ -155,6 +156,22 @@ function ensureDefaultCategories_() {
   ];
   sh.getRange(2, 1, rows.length, 6).setValues(rows);
   ensureActiveCheckboxes_(sh);
+}
+
+// 取込の区分推定ルールの初期値。タイトルに含まれていればその区分を提案する
+// (実際の予定名は「UB定例」「夕方の奉仕」のように語を含む形が多いため、完全一致では拾えない)
+function ensureImportMapDefaults_() {
+  var sh = sheet_(SHEETS.IMPORT_MAP);
+  if (sh.getLastRow() > 1) return; // 既にデータあり(ユーザーが編集済み or 取込で記憶済み)
+  var rows = [
+    // [タイトル(キーワード), 区分, 内訳]
+    ['築地出社', 'UB', ''],
+    ['テレワーク', 'UB', ''],
+    ['UB', 'UB', ''],
+    ['奉仕', 'FS', ''],
+    ['BRV', 'BT', '']
+  ];
+  sh.getRange(2, 1, rows.length, 3).setValues(rows);
 }
 
 // 有効列(F列)をチェックボックス表示にする(データ自体は true/false)
@@ -360,6 +377,7 @@ function listCalendarEvents(ym) {
   ym = String(ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
   ensureSetup_();
+  ensureImportMapDefaults_();  // 既存シートに初期ルールが無い場合の補填(冪等)
   var year = parseInt(ym.substring(0, 4), 10);
   var month = parseInt(ym.substring(5, 7), 10);
   var from = new Date(year, month - 1, 1);

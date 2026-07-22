@@ -917,20 +917,37 @@
     updateImportCount();
   }
 
+  // タイトルから区分を引く。完全一致(過去に取り込んだ実績)を優先し、無ければ
+  // 部分一致(「UB定例」に「UB」ルールが当たる)。複数当たればキーワードが長い=具体的な方を採る
+  function lookupImportRule(title) {
+    var map = importState.importMap;
+    if (map[title]) return { code: map[title].code, sub: map[title].sub || "", exact: true };
+    var best = null;
+    Object.keys(map).forEach(function (key) {
+      if (!key || title.indexOf(key) < 0) return;
+      if (!best || key.length > best.key.length) {
+        best = { key: key, code: map[key].code, sub: map[key].sub || "" };
+      }
+    });
+    return best ? { code: best.code, sub: best.sub, exact: false } : null;
+  }
+
   function importRowHtml(ev, idx) {
-    var remembered = importState.importMap[ev.title];
-    var assignHtml;
+    var rule = lookupImportRule(ev.title);
+    var assignHtml, checked;
     if (ev.allDay) {
       assignHtml = "<span class='imp-fixed'>日メモとして取込</span>";
+      checked = !!rule;
     } else {
-      var selValue = "";
-      if (remembered && remembered.code && remembered.code !== "DAYMEMO") {
-        selValue = remembered.sub ? remembered.code + "|" + remembered.sub : remembered.code;
-      }
+      // 終日用の記憶(DAYMEMO)は時間付きイベントには使えない(区分が決まらない)
+      var usable = rule && rule.code && rule.code !== "DAYMEMO";
+      var selValue = usable ? (rule.sub ? rule.code + "|" + rule.sub : rule.code) : "";
       assignHtml = importCategorySelectHtml(selValue);
+      if (usable && !rule.exact) assignHtml += " <span class='imp-guess'>推定</span>";
+      checked = !!usable;
     }
     return "<tr data-idx='" + idx + "'>" +
-      "<td><input type='checkbox' class='imp-check'" + (remembered ? " checked" : "") + "></td>" +
+      "<td><input type='checkbox' class='imp-check'" + (checked ? " checked" : "") + "></td>" +
       "<td class='imp-when'>" + escapeHtml(importDateTimeLabel(ev)) + "</td>" +
       "<td>" + escapeHtml(ev.title) + (ev.calendarName ? " <span class='imp-cal'>(" + escapeHtml(ev.calendarName) + ")</span>" : "") + "</td>" +
       "<td>" + assignHtml + "</td>" +
@@ -1040,15 +1057,24 @@
     if (recordsChanged) markRecordsDirty();
     if (daysChanged) markDaysDirty();
 
-    // 記憶の保存は失敗しても取込自体は成立させる(トーストのみで通知)
-    var mapEntries = picked.map(function (entry) {
+    // 提案どおりに取り込んだものは記憶を増やさない(既存ルールで足りるため。
+    // ルールと違う区分を選んだ場合だけ、そのタイトルを完全一致で覚える)
+    var mapEntries = picked.filter(function (entry) {
+      var rule = lookupImportRule(entry.event.title);
+      if (!rule) return true;
+      return entry.event.allDay ? rule.code !== "DAYMEMO"
+        : !(rule.code === entry.code && rule.sub === entry.sub);
+    }).map(function (entry) {
       return entry.event.allDay
         ? { title: entry.event.title, code: "DAYMEMO", sub: "" }
         : { title: entry.event.title, code: entry.code, sub: entry.sub };
     });
-    serverCall("saveImportMap", mapEntries).catch(function (err) {
-      handleServerError(err, "取込対応の記憶保存に失敗しました(取込自体は反映済みです)");
-    });
+    // 記憶の保存は失敗しても取込自体は成立させる(トーストのみで通知)
+    if (mapEntries.length) {
+      serverCall("saveImportMap", mapEntries).catch(function (err) {
+        handleServerError(err, "取込対応の記憶保存に失敗しました(取込自体は反映済みです)");
+      });
+    }
 
     closeModal();
     renderGrid();

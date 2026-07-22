@@ -359,6 +359,15 @@ td.is-today { border-right-color: #e8c76a; }
   color: #764d00;
 }
 .imp-outside { font-size: 10px; color: #b3261e; margin-left: 4px; }
+/* キーワード部分一致で区分を推定した行(完全一致の記憶と見分けるため) */
+.imp-guess {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: #e6ecf2;
+  color: #4a6178;
+}
 .imp-count { font-size: 12px; color: #445; margin-right: auto; }
 
 .modal-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }

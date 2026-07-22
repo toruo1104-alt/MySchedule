@@ -44,6 +44,23 @@
     { code: "mv", name: "移動", parent: "", color: "#d9d9d9", order: 90, active: true }
   ];
 
+  /* ---- 取込の区分推定ルール初期値(GAS.txt の ensureImportMapDefaults_ と揃える) ---- */
+  var DEFAULT_IMPORT_MAP = {
+    "築地出社": { code: "UB", sub: "" },
+    "テレワーク": { code: "UB", sub: "" },
+    "UB": { code: "UB", sub: "" },
+    "奉仕": { code: "FS", sub: "" },
+    "BRV": { code: "BT", sub: "" }
+  };
+
+  function cloneDefaultImportMap() {
+    var out = {};
+    Object.keys(DEFAULT_IMPORT_MAP).forEach(function (k) {
+      out[k] = { code: DEFAULT_IMPORT_MAP[k].code, sub: DEFAULT_IMPORT_MAP[k].sub };
+    });
+    return out;
+  }
+
   /* ---- DB(localStorage) ---- */
 
   function loadDb() {
@@ -51,7 +68,7 @@
       var raw = localStorage.getItem(LS_KEY);
       if (raw) {
         var db = JSON.parse(raw);
-        db.importMap = db.importMap || {}; // 旧データ互換(フェーズ3で追加)
+        db.importMap = db.importMap || cloneDefaultImportMap(); // 旧データ互換(フェーズ3で追加)
         return db;
       }
     } catch (e) { /* 壊れていたら作り直す */ }
@@ -64,7 +81,7 @@
 
   // 初期サンプル: 今月の最初の平日3日分にそれらしい記録を入れる
   function seedDb() {
-    var db = { categories: DEFAULT_CATEGORIES, records: [], days: [], importMap: {} };
+    var db = { categories: DEFAULT_CATEGORIES, records: [], days: [], importMap: cloneDefaultImportMap() };
     var now = new Date();
     var y = now.getFullYear(), m = now.getMonth();
     var seeded = 0;
@@ -150,9 +167,10 @@
     }
   };
 
-  // 検証ケースを網羅するサンプルイベントを表示月から動的生成(本番はGoogleカレンダーから取得)
-  //   出勤(9:15-17:45): 30分丸め検証。歯医者(14:00-15:00): 出勤日と重ね上書きバッジ検証。
-  //   燃えるごみ(終日・火曜2-3件): 日メモ取込検証。歓迎会: 通常ケース。早朝会議(5:30-6:30): 時間帯外注記検証。
+  // 検証ケースを網羅するサンプルイベントを表示月から動的生成(本番はGoogleカレンダーから取得)。
+  // タイトルは実カレンダーの傾向に合わせている(完全一致ルールと部分一致ルールの両方を検証するため)
+  //   築地出社(9:15-17:45): 30分丸め+完全一致ルール。歯医者(14:00-15:00): ルール無し=チェックOFF+上書きバッジ。
+  //   UB定例: 「UB」ルールの部分一致=「推定」バッジ。早朝会議(5:30-6:30): 時間帯外注記。燃えるごみ(終日・火曜): 日メモ取込。
   function sampleEventsForMonth(ym) {
     var y = parseInt(ym.substring(0, 4), 10);
     var m = parseInt(ym.substring(5, 7), 10);
@@ -168,10 +186,10 @@
     }
     var events = [];
     if (weekdays[0]) {
-      events.push(mkTimedEvent("出勤", weekdays[0], "09:15", "17:45"));
+      events.push(mkTimedEvent("築地出社", weekdays[0], "09:15", "17:45"));
       events.push(mkTimedEvent("歯医者", weekdays[0], "14:00", "15:00"));
     }
-    if (weekdays[1]) events.push(mkTimedEvent("歓迎会", weekdays[1], "18:30", "20:30"));
+    if (weekdays[1]) events.push(mkTimedEvent("UB定例", weekdays[1], "18:30", "20:30"));
     if (weekdays[2]) events.push(mkTimedEvent("早朝会議", weekdays[2], "05:30", "06:30"));
     tuesdays.slice(0, 3).forEach(function (dateStr) {
       events.push(mkAllDayEvent("燃えるごみ", dateStr));
