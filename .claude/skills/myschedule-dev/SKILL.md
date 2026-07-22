@@ -43,6 +43,10 @@ GitHub Pages(フロント) + GAS JSON API + スプレッドシート(データ)�
   → 症状: screenshot がタイムアウト、left_click が成功表示でもページに届かない
   → 対処: 検証は `javascript_tool` でDOM検査+イベントディスパッチ(`.click()`、MouseEvent)で行い、
     見た目の最終確認はユーザーに依頼する
+- **表示/非表示の検証は DOM プロパティだけでは不十分(実バグの反省)**
+  → `hidden` 属性は author CSS の `display: flex` に負ける。`el.hidden === true` でも表示され続けうる。
+    style.css の `[hidden] { display: none !important; }` を消さないこと。
+  → 検証は `getComputedStyle(el).display` と `document.elementFromPoint()`(最前面要素の確認)で行う
 - **PowerShell 5.1 の Get-Content は既定でANSI読み** → UTF-8ファイルが文字化けする。
   ファイル生成・変換はWrite/Editツールで行う(シェルのリダイレクトで作らない)
 - **GASの新バージョンデプロイ忘れ** → コードを貼り替えても本番に反映されない

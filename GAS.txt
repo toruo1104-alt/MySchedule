@@ -359,7 +359,14 @@ function ensureHolidaysForYear_(year) {
     var cal = CalendarApp.getCalendarById(HOLIDAY_CALENDAR_ID);
     if (!cal) return;
     var events = cal.getEvents(new Date(year, 0, 1), new Date(year + 1, 0, 1));
-    var rows = events.map(function (ev) {
+    // このカレンダーには「七夕」「大晦日」等の行事も含まれる。説明欄が「祝日」の
+    // イベントだけを法定祝日として採用する(行事が混ざると営業日計算が狂う)。
+    // 万一「祝日」表記が1件も無い場合(仕様変更)は、全件採用にフォールバック。
+    var holidayEvents = events.filter(function (ev) {
+      return String(ev.getDescription() || '').indexOf('祝日') >= 0;
+    });
+    if (!holidayEvents.length) holidayEvents = events;
+    var rows = holidayEvents.map(function (ev) {
       return [Utilities.formatDate(ev.getStartTime(), TZ, 'yyyy-MM-dd'), ev.getTitle()];
     });
     if (rows.length) sh.getRange(sh.getLastRow() + 1, 1, rows.length, 2).setValues(rows);

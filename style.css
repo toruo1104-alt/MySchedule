@@ -5,6 +5,10 @@
 
 * { box-sizing: border-box; }
 
+/* hidden属性を確実に効かせる。#modal-overlay や #grid-loading は display:flex を
+   指定しているため、これが無いと hidden でも表示され続ける(操作ブロックの実バグ) */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
