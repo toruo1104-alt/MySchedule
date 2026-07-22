@@ -1,0 +1,401 @@
+/* ============================================================
+   MySchedule — API サーバー (コード.gs)
+
+   構成: フロントは GitHub Pages の静的サイト、本スクリプトは
+         「開発者権限で動く JSON API」に特化(HtmlServiceは使わない)。
+   デプロイ: ウェブアプリ (自分として実行 / アクセス: 全員)
+     ※「全員」はフロントからの匿名fetchを受けるために必要。
+       データは apiToken(設定シート)が一致しないと一切返さない。
+
+   通信仕様:
+     POST body(text/plain): {"token": "...", "fn": "関数名", "args": [...]}
+     レスポンス(JSON):      {"ok": true, "data": ...} | {"ok": false, "error": "..."}
+     ※ Content-Type を text/plain にするのは CORS の preflight を
+       発生させないため(GAS は preflight に応答できない)。
+
+   シート構成(列の挿入・順序変更は禁止。追加は末尾のみ):
+     設定     : [キー, 値, 説明]
+     区分     : [コード, 名称, 親コード, 色, 表示順, 有効]
+     記録     : [日付, 時刻, 区分, 内訳, メモ]   1行=1スロット(30分枠)
+     日次     : [日付, 有休, 日メモ]
+     祝日     : [日付, 名称]                     年単位で自動取得・キャッシュ
+     取込対応 : [タイトル, 区分, 内訳]           カレンダー取込の区分記憶(フェーズ3)
+
+   日付は 'yyyy-MM-dd'、時刻は 'HH:mm' の文字列で保存する
+   (該当列はテキスト書式に固定。Date型の暗黙変換による日付ズレを防ぐ)。
+============================================================ */
+
+var SHEETS = {
+  CONFIG: '設定',
+  CATEGORIES: '区分',
+  RECORDS: '記録',
+  DAYS: '日次',
+  HOLIDAYS: '祝日',
+  IMPORT_MAP: '取込対応'
+};
+
+var HOLIDAY_CALENDAR_ID = 'ja.japanese#holiday@group.v.calendar.google.com';
+var TZ = 'Asia/Tokyo';
+
+/* ===== API 入口 ===== */
+
+// 死活確認用(ブラウザでURLを開くと表示される)
+function doGet() {
+  return jsonOut_({ ok: true, app: 'MySchedule API', usage: 'POST {token, fn, args}' });
+}
+
+function doPost(e) {
+  var res;
+  try {
+    var req = JSON.parse(e && e.postData && e.postData.contents || '{}');
+    checkToken_(req.token);
+    var API = {
+      getMonthData: getMonthData,
+      saveMonthRecords: saveMonthRecords,
+      saveMonthDays: saveMonthDays,
+      saveCategories: saveCategories
+    };
+    var fn = String(req.fn || '');
+    if (!API[fn]) throw new Error('不明なAPI: ' + fn);
+    res = { ok: true, data: API[fn].apply(null, req.args || []) };
+  } catch (err) {
+    res = { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+  return jsonOut_(res);
+}
+
+function jsonOut_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// トークン照合。設定シートの apiToken と一致しなければすべて拒否
+function checkToken_(token) {
+  ensureSetup_();
+  var expected = String(readConfigValue_('apiToken') || '');
+  if (!expected) throw new Error('サーバーの apiToken が未設定です(setupSpreadsheet を実行してください)');
+  if (String(token || '') !== expected) throw new Error('認証エラー: トークンが一致しません');
+}
+
+/* ===== 初期セットアップ(冪等: 再実行しても既存データは壊さない) ===== */
+
+function setupSpreadsheet() {
+  ensureSheet_(SHEETS.CONFIG, ['キー', '値', '説明']);
+  ensureSheet_(SHEETS.CATEGORIES, ['コード', '名称', '親コード', '色', '表示順', '有効']);
+  ensureSheet_(SHEETS.RECORDS, ['日付', '時刻', '区分', '内訳', 'メモ']);
+  ensureSheet_(SHEETS.DAYS, ['日付', '有休', '日メモ']);
+  ensureSheet_(SHEETS.HOLIDAYS, ['日付', '名称']);
+  ensureSheet_(SHEETS.IMPORT_MAP, ['タイトル', '区分', '内訳']);
+
+  // 日付・時刻列はテキスト固定(自動で日付型に変換されるとデータが壊れるため)
+  sheet_(SHEETS.RECORDS).getRange('A:B').setNumberFormat('@');
+  sheet_(SHEETS.DAYS).getRange('A:A').setNumberFormat('@');
+  sheet_(SHEETS.HOLIDAYS).getRange('A:A').setNumberFormat('@');
+
+  ensureConfigDefaults_();
+  ensureDefaultCategories_();
+}
+
+function ensureSheet_(name, headers) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+  sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+  if (sh.getFrozenRows() < 1) sh.setFrozenRows(1);
+  return sh;
+}
+
+function ensureConfigDefaults_() {
+  var defaults = [
+    ['dayStart', '06:00', 'グリッド表示の開始時刻'],
+    ['dayEnd', '22:00', 'グリッド表示の終了時刻(この時刻の枠は含まない)'],
+    ['ownHoursPerDay', 8, '自社の要求業務時間(h/勤務日)'],
+    ['clientHoursPerDay', 7.5, '派遣先の要求業務時間(h/勤務日)'],
+    ['clientWorkCode', 'UB', '派遣先業務の区分コード(集計の実績比較に使用)'],
+    ['calendarIds', '', 'カレンダー取込の対象カレンダーID(カンマ区切り。フェーズ3で使用)'],
+    ['apiToken', Utilities.getUuid(), 'API認証トークン(アプリの初回設定画面に貼り付ける。漏れたら値を変えて再デプロイ不要で即無効化できる)']
+  ];
+  var sh = sheet_(SHEETS.CONFIG);
+  var data = sh.getDataRange().getValues();
+  var existing = {};
+  for (var i = 1; i < data.length; i++) existing[String(data[i][0])] = true;
+  var toAdd = defaults.filter(function (d) { return !existing[d[0]]; });
+  if (toAdd.length) sh.getRange(sh.getLastRow() + 1, 1, toAdd.length, 3).setValues(toAdd);
+}
+
+function ensureDefaultCategories_() {
+  var sh = sheet_(SHEETS.CATEGORIES);
+  if (sh.getLastRow() > 1) {
+    ensureActiveCheckboxes_(sh);
+    return; // 既にデータあり(初期値は投入済みか、ユーザーが編集済み)
+  }
+  var rows = [
+    // [コード, 名称, 親コード, 色, 表示順, 有効]
+    ['UB', '派遣先業務', '', '#aecde8', 10, true],
+    ['CN', '自社業務', '', '#d9c2e9', 20, true],
+    ['BT', 'ベテル奉仕', '', '#c9e3b4', 30, true],
+    ['FS', '奉仕', '', '#ffe699', 40, true],
+    ['MT', '集会', '', '#f4b8b8', 50, true],
+    ['CW', '会衆の仕事', '', '#f8cbad', 60, true],
+    ['ST', '勉強', '', '#b4dcd8', 70, true],
+    ['ST1', '個人研究', 'ST', '', 71, true],
+    ['ST2', '割当準備', 'ST', '', 72, true],
+    ['ST3', '聖書通読', 'ST', '', 73, true],
+    ['ST4', '集会予習', 'ST', '', 74, true],
+    ['FX', 'フレックス', '', '#e2e8cf', 80, true],
+    ['FX1', '料理', 'FX', '', 81, true],
+    ['FX2', '掃除', 'FX', '', 82, true],
+    ['FX3', '洗濯', 'FX', '', 83, true],
+    ['FX4', 'エクササイズ', 'FX', '', 84, true],
+    ['FX5', 'レク', 'FX', '', 85, true],
+    ['mv', '移動', '', '#d9d9d9', 90, true]
+  ];
+  sh.getRange(2, 1, rows.length, 6).setValues(rows);
+  ensureActiveCheckboxes_(sh);
+}
+
+// 有効列(F列)をチェックボックス表示にする(データ自体は true/false)
+function ensureActiveCheckboxes_(sh) {
+  var last = Math.max(sh.getLastRow(), 2);
+  sh.getRange(2, 6, last - 1, 1).insertCheckboxes();
+}
+
+// シート未作成のままAPIが呼ばれたら自動セットアップ(初回アクセスを簡単に)
+function ensureSetup_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(SHEETS.CONFIG) || !ss.getSheetByName(SHEETS.RECORDS)) {
+    setupSpreadsheet();
+  }
+}
+
+/* ===== 読み取りAPI ===== */
+
+// 月データ一括取得。ym = 'yyyy-MM'
+function getMonthData(ym) {
+  ym = String(ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
+  ensureSetup_();
+  ensureHolidaysForYear_(parseInt(ym.substring(0, 4), 10));
+  return {
+    ym: ym,
+    config: readConfig_(),
+    categories: readCategories_(),
+    records: readMonthRecords_(ym),
+    days: readMonthDays_(ym),
+    holidays: readHolidaysForMonth_(ym)
+  };
+}
+
+function readConfigValue_(key) {
+  var data = sheet_(SHEETS.CONFIG).getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === key) return data[i][1];
+  }
+  return '';
+}
+
+// フロントへ返す設定。apiToken は絶対に含めない
+function readConfig_() {
+  var data = sheet_(SHEETS.CONFIG).getDataRange().getValues();
+  var out = {};
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0]) out[String(data[i][0])] = data[i][1];
+  }
+  return {
+    dayStart: fmtTime_(out.dayStart || '06:00'),
+    dayEnd: fmtTime_(out.dayEnd || '22:00'),
+    ownHoursPerDay: Number(out.ownHoursPerDay) || 8,
+    clientHoursPerDay: Number(out.clientHoursPerDay) || 7.5,
+    clientWorkCode: String(out.clientWorkCode || 'UB'),
+    calendarIds: String(out.calendarIds || '')
+  };
+}
+
+function readCategories_() {
+  var data = sheet_(SHEETS.CATEGORIES).getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < data.length; i++) {
+    var r = data[i];
+    if (!r[0]) continue;
+    out.push({
+      code: String(r[0]),
+      name: String(r[1] || ''),
+      parent: String(r[2] || ''),
+      color: String(r[3] || ''),
+      order: Number(r[4]) || 0,
+      active: r[5] === true || String(r[5]).toUpperCase() === 'TRUE'
+    });
+  }
+  out.sort(function (a, b) { return a.order - b.order; });
+  return out;
+}
+
+function readMonthRecords_(ym) {
+  var data = sheet_(SHEETS.RECORDS).getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < data.length; i++) {
+    var d = fmtDate_(data[i][0]);
+    if (d.indexOf(ym + '-') !== 0) continue;
+    out.push({
+      date: d,
+      time: fmtTime_(data[i][1]),
+      code: String(data[i][2] || ''),
+      sub: String(data[i][3] || ''),
+      memo: String(data[i][4] || '')
+    });
+  }
+  return out;
+}
+
+function readMonthDays_(ym) {
+  var data = sheet_(SHEETS.DAYS).getDataRange().getValues();
+  var out = [];
+  for (var i = 1; i < data.length; i++) {
+    var d = fmtDate_(data[i][0]);
+    if (d.indexOf(ym + '-') !== 0) continue;
+    out.push({
+      date: d,
+      paidLeave: data[i][1] === true || String(data[i][1]).toUpperCase() === 'TRUE',
+      memo: String(data[i][2] || '')
+    });
+  }
+  return out;
+}
+
+function readHolidaysForMonth_(ym) {
+  var data = sheet_(SHEETS.HOLIDAYS).getDataRange().getValues();
+  var out = {};
+  for (var i = 1; i < data.length; i++) {
+    var d = fmtDate_(data[i][0]);
+    if (d.indexOf(ym + '-') === 0) out[d] = String(data[i][1] || '祝日');
+  }
+  return out;
+}
+
+/* ===== 保存API(月ブロック置換方式) =====
+   フロントは常に「その月の全データ」を送る。サーバーは
+   対象月以外の行を残し、対象月を丸ごと差し替えて日付順で書き戻す。
+   冪等で、保存のたびにシートが整列される。 */
+
+function saveMonthRecords(ym, records) {
+  ym = String(ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
+  var sh = sheet_(SHEETS.RECORDS);
+  var data = sh.getDataRange().getValues();
+  var all = [];
+  for (var i = 1; i < data.length; i++) {
+    var d = fmtDate_(data[i][0]);
+    if (!d || d.indexOf(ym + '-') === 0) continue; // 対象月と空行は除外
+    all.push([d, fmtTime_(data[i][1]),
+      String(data[i][2] || ''), String(data[i][3] || ''), String(data[i][4] || '')]);
+  }
+  (records || []).forEach(function (r) {
+    if (!r || !r.date || !r.time || !r.code) return; // 区分なしスロットは保存しない
+    all.push([String(r.date), String(r.time), String(r.code), String(r.sub || ''), String(r.memo || '')]);
+  });
+  all.sort(rowComparator_);
+  writeAllRows_(sh, all, 5, data.length - 1);
+  return { ok: true, savedYm: ym };
+}
+
+function saveMonthDays(ym, days) {
+  ym = String(ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
+  var sh = sheet_(SHEETS.DAYS);
+  var data = sh.getDataRange().getValues();
+  var all = [];
+  for (var i = 1; i < data.length; i++) {
+    var d = fmtDate_(data[i][0]);
+    if (!d || d.indexOf(ym + '-') === 0) continue;
+    all.push([d, data[i][1] === true || String(data[i][1]).toUpperCase() === 'TRUE', String(data[i][2] || '')]);
+  }
+  (days || []).forEach(function (day) {
+    if (!day || !day.date) return;
+    if (!day.paidLeave && !day.memo) return; // 情報のない日は保存しない
+    all.push([String(day.date), !!day.paidLeave, String(day.memo || '')]);
+  });
+  all.sort(rowComparator_);
+  writeAllRows_(sh, all, 3, data.length - 1);
+  return { ok: true, savedYm: ym };
+}
+
+function saveCategories(categories) {
+  var sh = sheet_(SHEETS.CATEGORIES);
+  var oldCount = Math.max(sh.getLastRow() - 1, 0);
+  var rows = (categories || [])
+    .filter(function (c) { return c && c.code; })
+    .map(function (c) {
+      return [String(c.code), String(c.name || ''), String(c.parent || ''),
+        String(c.color || ''), Number(c.order) || 0, !!c.active];
+    });
+  writeAllRows_(sh, rows, 6, oldCount);
+  ensureActiveCheckboxes_(sh);
+  return { ok: true, count: rows.length };
+}
+
+// 先に新データを上書きし、余った旧行をクリアする(途中失敗でも全消失しない順序)
+function writeAllRows_(sh, rows, numCols, oldCount) {
+  if (rows.length) sh.getRange(2, 1, rows.length, numCols).setValues(rows);
+  var extra = oldCount - rows.length;
+  if (extra > 0) sh.getRange(2 + rows.length, 1, extra, numCols).clearContent();
+}
+
+function rowComparator_(a, b) {
+  if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+  var t1 = String(a[1] || ''), t2 = String(b[1] || '');
+  return t1 === t2 ? 0 : (t1 < t2 ? -1 : 1);
+}
+
+/* ===== 祝日(Googleの日本の祝日カレンダーから年単位で取得・キャッシュ) ===== */
+
+function ensureHolidaysForYear_(year) {
+  try {
+    var sh = sheet_(SHEETS.HOLIDAYS);
+    var data = sh.getDataRange().getValues();
+    var prefix = String(year) + '-';
+    for (var i = 1; i < data.length; i++) {
+      if (fmtDate_(data[i][0]).indexOf(prefix) === 0) return; // その年は取得済み
+    }
+    var cal = CalendarApp.getCalendarById(HOLIDAY_CALENDAR_ID);
+    if (!cal) return;
+    var events = cal.getEvents(new Date(year, 0, 1), new Date(year + 1, 0, 1));
+    var rows = events.map(function (ev) {
+      return [Utilities.formatDate(ev.getStartTime(), TZ, 'yyyy-MM-dd'), ev.getTitle()];
+    });
+    if (rows.length) sh.getRange(sh.getLastRow() + 1, 1, rows.length, 2).setValues(rows);
+  } catch (e) {
+    // 取得失敗でもアプリは動作継続(祝日なし or 過年度キャッシュで表示)
+    console.error('祝日取得失敗: ' + e);
+  }
+}
+
+/* ===== ユーティリティ ===== */
+
+function sheet_(name) {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  if (!sh) { setupSpreadsheet(); sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name); }
+  return sh;
+}
+
+// Date型・各種文字列を 'yyyy-MM-dd' に正規化(読み取りは寛容に)
+function fmtDate_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd');
+  var s = String(v || '').trim();
+  var m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (m) return m[1] + '-' + pad2_(m[2]) + '-' + pad2_(m[3]);
+  return s;
+}
+
+// Date型・各種文字列を 'HH:mm' に正規化
+function fmtTime_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'HH:mm');
+  var s = String(v || '').trim();
+  var m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (m) return pad2_(m[1]) + ':' + m[2];
+  return s;
+}
+
+function pad2_(n) {
+  var s = String(n);
+  return s.length < 2 ? '0' + s : s;
+}

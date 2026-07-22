@@ -1,0 +1,5 @@
+# 変更前バックアップ(ローカル専用)
+old/
+
+# Claude Code の個人設定
+.claude/settings.local.json

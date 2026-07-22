@@ -1,0 +1,363 @@
+/* ============================================================
+   MySchedule — スタイル (style.css)
+   月グリッド: 横=日付、縦=30分枠。Excel「時間記録.xlsx」の見た目を踏襲。
+============================================================ */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: "Meiryo", "Yu Gothic UI", sans-serif;
+  font-size: 13px;
+  color: #222;
+  background: #f5f6f8;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+main {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 10px 16px;
+}
+
+/* ===== ツールバー ===== */
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 6px 10px;
+  background: #2f4a6b;
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+#toolbar button {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #8aa;
+  border-radius: 4px;
+  background: #fff;
+  color: #223;
+  cursor: pointer;
+}
+#toolbar button:hover { background: #eef3f8; }
+#toolbar button:disabled { opacity: .45; cursor: default; }
+
+.tb-nav { display: flex; align-items: center; gap: 6px; }
+#ym-label { font-size: 15px; font-weight: bold; min-width: 7.5em; text-align: center; }
+
+/* 区分パレット */
+.tb-palette { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+
+.pal-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.pal-btn .pal-swatch {
+  width: 12px; height: 12px;
+  border: 1px solid #999;
+  border-radius: 2px;
+  display: inline-block;
+}
+.pal-btn.is-selected {
+  border-color: #ffd54d;
+  box-shadow: 0 0 0 1px #ffd54d;
+  font-weight: bold;
+}
+.pal-btn .pal-sub-mark { font-size: 10px; color: #666; }
+
+/* 内訳ドロップダウン */
+.pal-group { position: relative; }
+.pal-sub-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  background: #fff;
+  border: 1px solid #999;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  z-index: 40;
+  min-width: 110px;
+}
+.pal-sub-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 4px 10px;
+  border: none;
+  background: none;
+  font-size: 12px;
+  cursor: pointer;
+  color: #223;
+}
+.pal-sub-item:hover { background: #eef3f8; }
+.pal-sub-item.is-selected { font-weight: bold; background: #fff3c4; }
+
+.tb-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+#save-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+#save-status.is-saved  { background: #d7f5dd; color: #063; }
+#save-status.is-saving { background: #ffe9a8; color: #764d00; }
+#save-status.is-error  { background: #ffc9c9; color: #8a1111; cursor: pointer; }
+
+/* ===== 月グリッド ===== */
+
+#grid-container { position: relative; overflow: auto; max-height: calc(100vh - 60px - 180px); background: #fff; border: 1px solid #b5bcc4; }
+#grid-loading {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.75);
+  font-weight: bold; z-index: 20;
+}
+
+#grid { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+
+#grid th, #grid td {
+  border-right: 1px solid #cdd3da;
+  border-bottom: 1px solid #e2e6ea;
+  padding: 0;
+  text-align: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* 時刻列(左端・sticky) */
+#grid .col-time {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  background: #edf0f4;
+  width: 46px; min-width: 46px; max-width: 46px;
+  font-size: 10px;
+  color: #445;
+  border-right: 1px solid #9aa2ac;
+}
+
+/* 日ヘッダ(上・sticky) */
+#grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #edf0f4;
+  font-size: 11px;
+  height: 34px;
+  cursor: pointer;
+  border-bottom: 2px solid #9aa2ac;
+}
+#grid thead th.col-time { z-index: 15; cursor: default; }
+#grid thead th .dh-day { display: block; font-size: 12px; font-weight: bold; line-height: 1.2; }
+#grid thead th .dh-wd  { display: block; font-size: 10px; line-height: 1.1; }
+#grid thead th .dh-mark { display: block; font-size: 9px; line-height: 1.1; color: #a05; }
+#grid thead th:hover { outline: 2px solid #7aa7d8; outline-offset: -2px; }
+
+/* 曜日・祝日・有休の列色(Excel踏襲: 土=淡青、日祝=淡赤、有休=淡黄) */
+.day-sat      { background: #dbe7f5; }
+.day-sun      { background: #f5dbdb; }
+.day-holiday  { background: #f5dbdb; }
+.day-paidleave{ background: #faf3d1; }
+#grid thead th.day-sat      { background: #c8dcf2; }
+#grid thead th.day-sun,
+#grid thead th.day-holiday  { background: #f2c8c8; }
+#grid thead th.day-paidleave{ background: #f5e9a8; }
+
+/* 今日の列 */
+#grid thead th.is-today { box-shadow: inset 0 0 0 2px #e8a000; }
+td.is-today { border-right-color: #e8c76a; }
+
+/* データセル */
+#grid td.slot {
+  width: 34px; min-width: 34px; max-width: 34px;
+  height: 17px;
+  font-size: 9.5px;
+  line-height: 17px;
+  cursor: cell;
+  color: #1c2733;
+}
+#grid td.slot .memo-text { font-size: 8.5px; }
+
+/* 1時間ごとの太罫線(毎時00分の枠の上辺) */
+#grid tr.hour-start td, #grid tr.hour-start th { border-top: 1px solid #aab2bc; }
+
+/* ドラッグ選択プレビュー */
+#grid td.slot.is-drag { outline: 2px solid #e8a000; outline-offset: -2px; opacity: .8; }
+
+/* メモ付きスロットの右上マーク */
+#grid td.slot.has-memo { position: relative; }
+#grid td.slot.has-memo::after {
+  content: "";
+  position: absolute;
+  top: 0; right: 0;
+  border-style: solid;
+  border-width: 0 5px 5px 0;
+  border-color: transparent #c33 transparent transparent;
+}
+
+/* ===== 集計パネル ===== */
+
+#summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+  margin-top: 10px;
+}
+
+.sum-block {
+  background: #fff;
+  border: 1px solid #b5bcc4;
+  padding: 8px 12px;
+}
+
+.sum-block h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #2f4a6b;
+  border-bottom: 1px solid #ccd;
+  padding-bottom: 3px;
+}
+
+.sum-table { border-collapse: collapse; font-size: 12px; }
+.sum-table th, .sum-table td { padding: 2px 8px; text-align: right; }
+.sum-table th { text-align: left; font-weight: normal; }
+.sum-table .sum-swatch {
+  display: inline-block;
+  width: 11px; height: 11px;
+  border: 1px solid #999;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+.sum-table tr.sum-sub th { padding-left: 26px; color: #556; font-size: 11px; }
+.sum-table tr.sum-sub td { color: #556; font-size: 11px; }
+.sum-table tr.sum-total { border-top: 1px solid #99a; font-weight: bold; }
+.sum-table td.sum-diff-plus  { color: #0a7a2f; }
+.sum-table td.sum-diff-minus { color: #b3261e; }
+
+/* ===== ポップオーバー(セルメモ・日情報) ===== */
+
+#popover {
+  position: absolute;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid #778;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.3);
+  padding: 10px;
+  min-width: 220px;
+  font-size: 12px;
+}
+#popover h4 { margin: 0 0 6px; font-size: 12px; color: #2f4a6b; }
+#popover .pop-row { margin: 6px 0; display: flex; align-items: center; gap: 6px; }
+#popover input[type="text"] {
+  flex: 1;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid #99a;
+  border-radius: 3px;
+}
+#popover label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+#popover .pop-buttons { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+#popover button {
+  font-size: 12px;
+  padding: 3px 10px;
+  border: 1px solid #99a;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+#popover button.primary { background: #2f4a6b; color: #fff; border-color: #2f4a6b; }
+#popover .pop-note { font-size: 10px; color: #667; }
+
+/* ===== モーダル ===== */
+
+#modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 30, 45, .45);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#modal {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.4);
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow: auto;
+  padding: 14px 18px;
+}
+
+#modal h3 { margin: 0 0 10px; font-size: 15px; color: #2f4a6b; }
+
+.cat-table { border-collapse: collapse; font-size: 12px; }
+.cat-table th, .cat-table td { border: 1px solid #ccd2d8; padding: 3px 6px; }
+.cat-table th { background: #edf0f4; font-weight: normal; }
+.cat-table input[type="text"] { font-size: 12px; padding: 2px 4px; border: 1px solid #aab; border-radius: 3px; }
+.cat-table input.cat-code { width: 4em; }
+.cat-table input.cat-name { width: 9em; }
+.cat-table input.cat-parent { width: 4em; }
+.cat-table input.cat-order { width: 4em; text-align: right; }
+.cat-table input[type="color"] { width: 40px; height: 22px; padding: 0; border: 1px solid #aab; }
+.cat-table td.cat-fixed { color: #445; background: #f4f6f8; }
+
+.modal-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.modal-buttons button {
+  font-size: 13px;
+  padding: 5px 14px;
+  border: 1px solid #99a;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+.modal-buttons button.primary { background: #2f4a6b; color: #fff; border-color: #2f4a6b; }
+.modal-note { font-size: 11px; color: #667; margin: 6px 0; max-width: 480px; }
+
+/* API設定モーダル */
+.set-row { margin: 10px 0; }
+.set-row label { display: block; font-size: 12px; color: #2f4a6b; margin-bottom: 3px; }
+.set-row input[type="text"] {
+  width: 420px;
+  max-width: 80vw;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid #99a;
+  border-radius: 4px;
+}
+
+/* ===== トースト ===== */
+
+#toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 40, 55, .92);
+  color: #fff;
+  font-size: 13px;
+  padding: 8px 18px;
+  border-radius: 18px;
+  z-index: 200;
+  pointer-events: none;
+}
+#toast.is-error { background: rgba(160, 30, 30, .95); }

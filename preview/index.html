@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>MySchedule (ローカルプレビュー)</title>
+</head>
+<body>
+<script>
+/* 本番の index.html / style.css / app.js を取得して組み立てるローダー。
+   mock.js(GAS APIの偽実装 __MYSCHEDULE_MOCK__)を先に実行してから app.js を実行する。
+   ※ http.server 経由で開くこと(file:// では fetch が動かない) */
+(async function () {
+  try {
+    var results = await Promise.all([
+      fetch("../index.html").then(function (r) { return r.text(); }),
+      fetch("../style.css").then(function (r) { return r.text(); }),
+      fetch("../app.js").then(function (r) { return r.text(); }),
+      fetch("mock.js").then(function (r) { return r.text(); })
+    ]);
+    var html = results[0], css = results[1], app = results[2], mock = results[3];
+
+    // CSS を head へ
+    var style = document.createElement("style");
+    style.textContent = css;
+    document.head.appendChild(style);
+
+    // body を移植(app.js への script 参照は除去して実行順を自前制御)
+    var parsed = new DOMParser().parseFromString(html, "text/html");
+    var scripts = parsed.body.querySelectorAll("script");
+    for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+    document.body.innerHTML = parsed.body.innerHTML;
+
+    // mock → 本体JS の順に実行
+    runScript(mock);
+    runScript(app);
+  } catch (e) {
+    document.body.innerHTML = "<pre>プレビュー読み込み失敗: " + e + "</pre>";
+  }
+
+  function runScript(code) {
+    var s = document.createElement("script");
+    s.textContent = code;
+    document.body.appendChild(s);
+  }
+})();
+</script>
+</body>
+</html>

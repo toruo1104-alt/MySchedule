@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>MySchedule</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- ===== ツールバー ===== -->
+    <header id="toolbar">
+      <div class="tb-nav">
+        <button type="button" id="btn-prev" title="前月">◀</button>
+        <span id="ym-label">----年--月</span>
+        <button type="button" id="btn-next" title="次月">▶</button>
+        <button type="button" id="btn-today">今日</button>
+      </div>
+
+      <!-- 区分パレット(JSで生成: 区分ボタン+消しゴム) -->
+      <div id="palette" class="tb-palette"></div>
+
+      <div class="tb-actions">
+        <button type="button" id="btn-categories">区分編集</button>
+        <button type="button" id="btn-import" disabled title="カレンダー取込(フェーズ3で実装予定)">取込</button>
+        <button type="button" id="btn-settings" title="API設定">⚙</button>
+        <span id="save-status" class="is-saved" title="保存状態">保存済み</span>
+      </div>
+    </header>
+
+    <!-- ===== 月グリッド ===== -->
+    <main>
+      <div id="grid-container">
+        <div id="grid-loading" hidden>読み込み中…</div>
+        <table id="grid"></table>
+      </div>
+
+      <!-- ===== 集計パネル ===== -->
+      <section id="summary">
+        <div id="summary-categories" class="sum-block"></div>
+        <div id="summary-work" class="sum-block"></div>
+      </section>
+    </main>
+
+  </div>
+
+  <!-- セルメモ・日情報のポップオーバー(位置・中身はJSが設定) -->
+  <div id="popover" hidden></div>
+
+  <!-- モーダル(区分編集・API設定など) -->
+  <div id="modal-overlay" hidden>
+    <div id="modal" role="dialog"></div>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
