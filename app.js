@@ -30,7 +30,7 @@
   /* ===== 状態 ===== */
   var state = {
     ym: "",                                   // 表示中の年月 "yyyy-MM"
-    config: { dayStart: "06:00", dayEnd: "22:00", ownHoursPerDay: 8, clientHoursPerDay: 7.5, clientWorkCode: "UB" },
+    config: { dayStart: "06:00", dayEnd: "22:00", ownHoursPerDay: 8, clientHoursPerDay: 7.5, clientWorkCode: "UB", manMonthRatio: 0.6 },
     categories: [],                           // 区分マスタ(表示順ソート済み)
     records: {},                              // スロット記録(キー: date|time)
     days: {},                                 // 日次情報(キー: date)
@@ -792,11 +792,13 @@
       if (info && info.paidLeave) paidLeaves++;
     });
     var workDays = bizDays - paidLeaves;
-    var ownReq = workDays * state.config.ownHoursPerDay;
-    var clientReq = workDays * state.config.clientHoursPerDay;
+    var ratio = state.config.manMonthRatio || 1;   // 契約人月(0.6人月契約 → 要求時間×0.6)
+    var ownReq = workDays * state.config.ownHoursPerDay * ratio;
+    var clientReq = workDays * state.config.clientHoursPerDay * ratio;
     var ubActual = byCode[state.config.clientWorkCode] || 0;
     var diffClient = ubActual - clientReq;
     var diffOwn = ubActual - ownReq;
+    var ratioLabel = ratio === 1 ? "" : "×" + ratio;
 
     document.getElementById("summary-work").innerHTML =
       "<h3>勤務日数・要求時間</h3><table class='sum-table'>" +
@@ -804,9 +806,9 @@
       "<tr><th>有休</th><td>" + paidLeaves + "日</td><td></td></tr>" +
       "<tr class='sum-total'><th>勤務日数</th><td>" + workDays + "日</td><td></td></tr>" +
       "<tr><th>" + escapeHtml(state.config.clientWorkCode) + " 実績</th><td>" + fmtHours(ubActual) + "</td><td></td></tr>" +
-      "<tr><th>派遣先要求(×" + state.config.clientHoursPerDay + "h)</th><td>" + fmtHours(clientReq) + "</td>" +
+      "<tr><th>派遣先要求(×" + state.config.clientHoursPerDay + "h" + ratioLabel + ")</th><td>" + fmtHours(clientReq) + "</td>" +
         "<td class='" + diffCls(diffClient) + "'>" + fmtDiff(diffClient) + "</td></tr>" +
-      "<tr><th>自社要求(×" + state.config.ownHoursPerDay + "h)</th><td>" + fmtHours(ownReq) + "</td>" +
+      "<tr><th>自社要求(×" + state.config.ownHoursPerDay + "h" + ratioLabel + ")</th><td>" + fmtHours(ownReq) + "</td>" +
         "<td class='" + diffCls(diffOwn) + "'>" + fmtDiff(diffOwn) + "</td></tr>" +
       "</table>";
   }

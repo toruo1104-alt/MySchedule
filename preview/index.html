@@ -11,11 +11,13 @@
    ※ http.server 経由で開くこと(file:// では fetch が動かない) */
 (async function () {
   try {
+    // cache: no-store — 編集直後の再読み込みで古いファイルを掴まないため
+    var opt = { cache: "no-store" };
     var results = await Promise.all([
-      fetch("../index.html").then(function (r) { return r.text(); }),
-      fetch("../style.css").then(function (r) { return r.text(); }),
-      fetch("../app.js").then(function (r) { return r.text(); }),
-      fetch("mock.js").then(function (r) { return r.text(); })
+      fetch("../index.html", opt).then(function (r) { return r.text(); }),
+      fetch("../style.css", opt).then(function (r) { return r.text(); }),
+      fetch("../app.js", opt).then(function (r) { return r.text(); }),
+      fetch("mock.js", opt).then(function (r) { return r.text(); })
     ]);
     var html = results[0], css = results[1], app = results[2], mock = results[3];
 

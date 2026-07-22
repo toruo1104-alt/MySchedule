@@ -98,7 +98,7 @@
         config: {
           dayStart: "06:00", dayEnd: "22:00",
           ownHoursPerDay: 8, clientHoursPerDay: 7.5,
-          clientWorkCode: "UB", calendarIds: ""
+          clientWorkCode: "UB", manMonthRatio: 0.6, calendarIds: ""
         },
         categories: db.categories.slice().sort(function (a, b) { return a.order - b.order; }),
         records: db.records.filter(function (r) { return r.date.indexOf(ym + "-") === 0; }),

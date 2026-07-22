@@ -112,6 +112,7 @@ function ensureConfigDefaults_() {
     ['ownHoursPerDay', 8, '自社の要求業務時間(h/勤務日)'],
     ['clientHoursPerDay', 7.5, '派遣先の要求業務時間(h/勤務日)'],
     ['clientWorkCode', 'UB', '派遣先業務の区分コード(集計の実績比較に使用)'],
+    ['manMonthRatio', 0.6, '契約人月(要求時間 = 勤務日数 × h/日 × この係数)'],
     ['calendarIds', '', 'カレンダー取込の対象カレンダーID(カンマ区切り。フェーズ3で使用)'],
     ['apiToken', Utilities.getUuid(), 'API認証トークン(アプリの初回設定画面に貼り付ける。漏れたら値を変えて再デプロイ不要で即無効化できる)']
   ];
@@ -207,6 +208,7 @@ function readConfig_() {
     ownHoursPerDay: Number(out.ownHoursPerDay) || 8,
     clientHoursPerDay: Number(out.clientHoursPerDay) || 7.5,
     clientWorkCode: String(out.clientWorkCode || 'UB'),
+    manMonthRatio: (out.manMonthRatio === '' || out.manMonthRatio == null) ? 0.6 : Number(out.manMonthRatio) || 0.6,
     calendarIds: String(out.calendarIds || '')
   };
 }
