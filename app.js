@@ -24,7 +24,9 @@
   /* ===== 定数 ===== */
   var SLOT_HOURS = 0.5;                       // 1スロット=30分
   var SAVE_DEBOUNCE_MS = 1200;                // 保存デバウンス
+  var UNDO_LIMIT = 30;                        // 元に戻せる操作数
   var API_SETTINGS_KEY = "myschedule-api";    // localStorage キー
+  var PALETTE_KEY = "myschedule-palette";     // パレット折りたたみ状態
   var WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
   /* ===== 状態 ===== */
@@ -50,7 +52,10 @@
   var dirtyDays = false;
 
   /* ドラッグ塗り */
-  var drag = null;                            // {anchorDate, anchorTime, curDate, curTime}
+  var drag = null;                            // {anchorDate, anchorTime, curDate, curTime, erase}
+
+  /* Undo履歴(操作直前のスナップショット。月を切り替えるとクリア) */
+  var undoStack = [];
 
   /* ===== DOM 参照 ===== */
   var $grid = document.getElementById("grid");
@@ -78,6 +83,11 @@
     document.getElementById("btn-today").addEventListener("click", function () { navTo(state.todayStr.substring(0, 7)); });
     document.getElementById("btn-categories").addEventListener("click", openCategoryModal);
     document.getElementById("btn-settings").addEventListener("click", openSettingsModal);
+    document.getElementById("btn-undo").addEventListener("click", undo);
+    document.getElementById("btn-toggle-palette").addEventListener("click", function () {
+      setPaletteCollapsed(!$palette.classList.contains("is-collapsed"));
+    });
+    initPaletteState();
     $saveStatus.addEventListener("click", function () {
       if ($saveStatus.classList.contains("is-error")) flushSaveNow();
     });
@@ -91,6 +101,63 @@
     } else {
       loadMonth(state.ym);
     }
+  }
+
+  /* ===== パレットの折りたたみ(スマホで場所を取らないように) ===== */
+
+  function initPaletteState() {
+    var saved = localStorage.getItem(PALETTE_KEY);
+    // 未設定なら画面幅で判断(狭い端末は畳んだ状態で開始)
+    setPaletteCollapsed(saved === null ? window.innerWidth < 700 : saved === "collapsed");
+  }
+
+  function setPaletteCollapsed(collapsed) {
+    $palette.classList.toggle("is-collapsed", collapsed);
+    document.getElementById("btn-toggle-palette").classList.toggle("is-active", !collapsed);
+    localStorage.setItem(PALETTE_KEY, collapsed ? "collapsed" : "open");
+  }
+
+  /* ===== Undo(操作直前のスナップショットを積む) ===== */
+
+  // kind: "records" | "days" — undo時にどちらを保存し直すかの判別に使う
+  function pushUndo(kind) {
+    var records = {};
+    Object.keys(state.records).forEach(function (k) {
+      var v = state.records[k];
+      records[k] = { code: v.code, sub: v.sub, memo: v.memo };
+    });
+    var days = {};
+    Object.keys(state.days).forEach(function (k) {
+      var v = state.days[k];
+      days[k] = { paidLeave: v.paidLeave, memo: v.memo };
+    });
+    undoStack.push({ records: records, days: days, kind: kind });
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    updateUndoButton();
+  }
+
+  function undo() {
+    if (!undoStack.length) return;
+    var snap = undoStack.pop();
+    state.records = snap.records;
+    state.days = snap.days;
+    if (snap.kind === "days") markDaysDirty(); else markRecordsDirty();
+    updateUndoButton();
+    closePopover();
+    renderGrid();
+    renderSummary();
+    showToast("元に戻しました" + (undoStack.length ? "(あと" + undoStack.length + "回)" : ""), false);
+  }
+
+  function clearUndo() {
+    undoStack = [];
+    updateUndoButton();
+  }
+
+  function updateUndoButton() {
+    var btn = document.getElementById("btn-undo");
+    btn.disabled = undoStack.length === 0;
+    btn.title = undoStack.length ? "元に戻す (Ctrl+Z) — あと" + undoStack.length + "回" : "元に戻す操作がありません";
   }
 
   /* ===== API設定(GAS URL+トークン) ===== */
@@ -210,6 +277,7 @@
           state.days[d.date] = { paidLeave: !!d.paidLeave, memo: d.memo || "" };
         });
         state.holidays = data.holidays || {};
+        clearUndo();   // 別の月の状態に戻せてしまうのを防ぐ
         ensureToolValid();
         renderAll();
       })
@@ -371,6 +439,17 @@
     return out;
   }
 
+  // 指定区分の日ごとの合計時間 { "yyyy-MM-dd": 時間 }
+  function dailyTotals(code) {
+    var map = {};
+    Object.keys(state.records).forEach(function (key) {
+      if (state.records[key].code !== code) return;
+      var date = key.substring(0, 10);
+      map[date] = (map[date] || 0) + SLOT_HOURS;
+    });
+    return map;
+  }
+
   // 日の状態クラス(土/日祝/有休)。セル・ヘッダ共通
   function dayClass(d) {
     var info = state.days[d.date];
@@ -436,6 +515,19 @@
     });
     html.push("</tbody>");
 
+    // ---- 日ごとの合計(派遣先業務。最下部に固定表示) ----
+    var sumCode = state.config.clientWorkCode || "UB";
+    var totals = dailyTotals(sumCode);
+    html.push("<tfoot><tr>");
+    html.push("<th class='col-time'>" + escapeHtml(sumCode) + "計</th>");
+    dates.forEach(function (d) {
+      var h = totals[d.date] || 0;
+      html.push("<td class='" + (h ? "" : "is-zero") + "' title='" + formatDateJp(d.date) + " " +
+        escapeHtml(sumCode) + " 合計'>" + fmtNum(h) + "</td>");
+    });
+    html.push("<th class='col-time'>" + escapeHtml(sumCode) + "計</th>");
+    html.push("</tr></tfoot>");
+
     $grid.innerHTML = html.join("");
   }
 
@@ -449,7 +541,10 @@
       ev.preventDefault();
       drag = {
         anchorDate: td.dataset.date, anchorTime: td.dataset.time,
-        curDate: td.dataset.date, curTime: td.dataset.time
+        curDate: td.dataset.date, curTime: td.dataset.time,
+        // 消しゴム選択中、または「選択中の区分と同じセル」から始めた場合は消去
+        // (同じ区分をなぞれば消える。別区分ならそのまま上書きできる)
+        erase: state.tool.type === "erase" || isSameAsTool(state.records[td.dataset.date + "|" + td.dataset.time])
       };
       updateDragPreview();
     });
@@ -504,24 +599,40 @@
     return keys;
   }
 
+  // 選択中のツールと同じ区分・内訳のスロットか(なぞって消す判定に使う)
+  function isSameAsTool(rec) {
+    return !!(rec && state.tool && state.tool.type === "paint" &&
+      rec.code === state.tool.code && (rec.sub || "") === (state.tool.sub || ""));
+  }
+
   function updateDragPreview() {
-    var marked = $grid.querySelectorAll("td.is-drag");
-    for (var i = 0; i < marked.length; i++) marked[i].classList.remove("is-drag");
+    var marked = $grid.querySelectorAll("td.is-drag, td.is-drag-erase");
+    for (var i = 0; i < marked.length; i++) marked[i].classList.remove("is-drag", "is-drag-erase");
     if (!drag) return;
+    var cls = drag.erase ? "is-drag-erase" : "is-drag";
     var keys = {};
     rectKeys(drag).forEach(function (k) { keys[k] = true; });
     var tds = $grid.querySelectorAll("td.slot");
     for (var j = 0; j < tds.length; j++) {
       var td = tds[j];
-      if (keys[td.dataset.date + "|" + td.dataset.time]) td.classList.add("is-drag");
+      if (keys[td.dataset.date + "|" + td.dataset.time]) td.classList.add(cls);
     }
   }
 
   function applyToolToRect(dragInfo) {
     var keys = rectKeys(dragInfo);
     if (!keys.length || !state.tool) return;
+    // 実際に変わるものが無ければ何もしない(無駄な履歴と保存を防ぐ)
+    var changed = keys.some(function (key) {
+      var rec = state.records[key];
+      if (dragInfo.erase) return !!rec;
+      return !rec || rec.code !== state.tool.code ||
+        (rec.sub || "") !== (state.tool.sub || "") || !!rec.memo;
+    });
+    if (!changed) return;
+    pushUndo("records");
     keys.forEach(function (key) {
-      if (state.tool.type === "erase") {
+      if (dragInfo.erase) {
         delete state.records[key];
       } else {
         // 塗り直しでメモは引き継がない(区分とメモの食い違いを防ぐ)
@@ -558,7 +669,13 @@
     var save = function () {
       var memo = input.value.trim();
       var applyBlock = document.getElementById("memo-apply-block").checked;
-      (applyBlock ? block : [key]).forEach(function (k) {
+      var targets = applyBlock ? block : [key];
+      if (!targets.some(function (k) { return state.records[k] && state.records[k].memo !== memo; })) {
+        closePopover();
+        return;
+      }
+      pushUndo("records");
+      targets.forEach(function (k) {
         if (state.records[k]) state.records[k].memo = memo;
       });
       markRecordsDirty();
@@ -606,6 +723,12 @@
     var save = function () {
       var paidLeave = document.getElementById("day-paidleave").checked;
       var memo = document.getElementById("day-memo").value.trim();
+      var cur = state.days[date] || { paidLeave: false, memo: "" };
+      if (cur.paidLeave === paidLeave && cur.memo === memo) {
+        closePopover();
+        return;
+      }
+      pushUndo("days");
       if (paidLeave || memo) {
         state.days[date] = { paidLeave: paidLeave, memo: memo };
       } else {
@@ -815,9 +938,10 @@
 
   function diffCls(v) { return v >= 0 ? "sum-diff-plus" : "sum-diff-minus"; }
   function fmtDiff(v) { return (v >= 0 ? "+" : "") + fmtHours(v); }
-  function fmtHours(h) {
+  function fmtHours(h) { return fmtNum(h) + "h"; }
+  function fmtNum(h) {
     var r = Math.round(h * 10) / 10;
-    return (r % 1 === 0 ? String(r) : r.toFixed(1)) + "h";
+    return r % 1 === 0 ? String(r) : r.toFixed(1);
   }
 
   /* ===== 保存(デバウンス+直列化) ===== */
@@ -898,10 +1022,19 @@
   function bindGlobalEvents() {
     // Esc: 最前面のものから1つずつ閉じる(ポップオーバー → パレットメニュー → モーダル)
     document.addEventListener("keydown", function (ev) {
-      if (ev.key !== "Escape") return;
-      if (closePopover()) return;
-      if (closeSubMenus()) return;
-      closeModal();
+      if (ev.key === "Escape") {
+        if (closePopover()) return;
+        if (closeSubMenus()) return;
+        closeModal();
+        return;
+      }
+      // Ctrl+Z で元に戻す(入力欄では文字編集のundoを優先)
+      if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === "z") {
+        var t = ev.target;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+        ev.preventDefault();
+        undo();
+      }
     });
 
     // 外側クリックで閉じる
