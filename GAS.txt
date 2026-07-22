@@ -159,19 +159,25 @@ function ensureDefaultCategories_() {
 }
 
 // 取込の区分推定ルールの初期値。タイトルに含まれていればその区分を提案する
-// (実際の予定名は「UB定例」「夕方の奉仕」のように語を含む形が多いため、完全一致では拾えない)
+// (実際の予定名は「UB定例」「夕方の奉仕」のように語を含む形が多いため、完全一致では拾えない)。
+// 設定と同じく「不足している行だけ追加」する(既存の行・ユーザーが変えた区分は触らない)。
 function ensureImportMapDefaults_() {
-  var sh = sheet_(SHEETS.IMPORT_MAP);
-  if (sh.getLastRow() > 1) return; // 既にデータあり(ユーザーが編集済み or 取込で記憶済み)
-  var rows = [
+  var defaults = [
     // [タイトル(キーワード), 区分, 内訳]
     ['築地出社', 'UB', ''],
     ['テレワーク', 'UB', ''],
     ['UB', 'UB', ''],
+    ['神谷町', 'UB', ''],
     ['奉仕', 'FS', ''],
-    ['BRV', 'BT', '']
+    ['BRV', 'BT', ''],
+    ['集会', 'MT', '']
   ];
-  sh.getRange(2, 1, rows.length, 3).setValues(rows);
+  var sh = sheet_(SHEETS.IMPORT_MAP);
+  var data = sh.getDataRange().getValues();
+  var existing = {};
+  for (var i = 1; i < data.length; i++) existing[String(data[i][0])] = true;
+  var toAdd = defaults.filter(function (d) { return !existing[d[0]]; });
+  if (toAdd.length) sh.getRange(sh.getLastRow() + 1, 1, toAdd.length, 3).setValues(toAdd);
 }
 
 // 有効列(F列)をチェックボックス表示にする(データ自体は true/false)

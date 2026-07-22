@@ -49,8 +49,10 @@
     "築地出社": { code: "UB", sub: "" },
     "テレワーク": { code: "UB", sub: "" },
     "UB": { code: "UB", sub: "" },
+    "神谷町": { code: "UB", sub: "" },
     "奉仕": { code: "FS", sub: "" },
-    "BRV": { code: "BT", sub: "" }
+    "BRV": { code: "BT", sub: "" },
+    "集会": { code: "MT", sub: "" }
   };
 
   function cloneDefaultImportMap() {
