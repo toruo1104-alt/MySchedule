@@ -176,7 +176,10 @@ function getMonthData(ym) {
   ym = String(ym || '');
   if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
   ensureSetup_();
-  ensureHolidaysForYear_(parseInt(ym.substring(0, 4), 10));
+  // 表示年と翌年の祝日を確保(来年の予定を立てるとき祝日が既に見えるように)
+  var year = parseInt(ym.substring(0, 4), 10);
+  ensureHolidaysForYear_(year);
+  ensureHolidaysForYear_(year + 1);
   return {
     ym: ym,
     config: readConfig_(),
