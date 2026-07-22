@@ -82,6 +82,7 @@
     document.getElementById("btn-next").addEventListener("click", function () { navMonth(+1); });
     document.getElementById("btn-today").addEventListener("click", function () { navTo(state.todayStr.substring(0, 7)); });
     document.getElementById("btn-categories").addEventListener("click", openCategoryModal);
+    document.getElementById("btn-import").addEventListener("click", openImportModal);
     document.getElementById("btn-settings").addEventListener("click", openSettingsModal);
     document.getElementById("btn-undo").addEventListener("click", undo);
     document.getElementById("btn-toggle-palette").addEventListener("click", function () {
@@ -119,7 +120,7 @@
 
   /* ===== Undo(操作直前のスナップショットを積む) ===== */
 
-  // kind: "records" | "days" — undo時にどちらを保存し直すかの判別に使う
+  // kind: "records" | "days" | "both" — undo時にどれを保存し直すかの判別に使う
   function pushUndo(kind) {
     var records = {};
     Object.keys(state.records).forEach(function (k) {
@@ -141,7 +142,9 @@
     var snap = undoStack.pop();
     state.records = snap.records;
     state.days = snap.days;
-    if (snap.kind === "days") markDaysDirty(); else markRecordsDirty();
+    if (snap.kind === "both") { markRecordsDirty(); markDaysDirty(); }
+    else if (snap.kind === "days") markDaysDirty();
+    else markRecordsDirty();
     updateUndoButton();
     closePopover();
     renderGrid();
@@ -866,6 +869,191 @@
     $modalOverlay.hidden = true;
     $modal.innerHTML = "";
     return true;
+  }
+
+  /* ===== カレンダー取込モーダル(フェーズ3) ===== */
+
+  // {events: [{title,start,end,allDay,date,calendarName}], importMap: {タイトル:{code,sub}}}
+  var importState = { events: [], importMap: {} };
+
+  function openImportModal() {
+    $modal.innerHTML = importNoteHtml() + "<div class='modal-note'>読み込み中…</div>";
+    $modalOverlay.hidden = false;
+
+    serverCall("listCalendarEvents", state.ym)
+      .then(function (data) {
+        importState.events = data.events || [];
+        importState.importMap = data.importMap || {};
+        renderImportTable();
+      })
+      .catch(function (err) {
+        closeModal();
+        handleServerError(err, "カレンダー予定の取得に失敗しました");
+      });
+  }
+
+  function importNoteHtml() {
+    return "<h3>Googleカレンダー取込 — " + escapeHtml($ymLabel.textContent) + "</h3>" +
+      "<div class='modal-note'>取り込みたい予定にチェックを入れて「取込実行」を押してください。" +
+      "終日の予定は日メモとして取り込まれます(ゴミの日などはチェックしなければ無視されます)。" +
+      "一度取り込んだタイトルは区分を記憶し、次回から自動でチェック・選択されます。</div>";
+  }
+
+  function renderImportTable() {
+    var body = importState.events.length
+      ? "<table class='imp-table'><thead><tr><th></th><th>日時</th><th>タイトル</th><th>割当</th><th>状態</th></tr></thead>" +
+        "<tbody id='imp-tbody'>" + importState.events.map(importRowHtml).join("") + "</tbody></table>"
+      : "<div class='modal-note'>今月のカレンダー予定は見つかりませんでした。</div>";
+    $modal.innerHTML = importNoteHtml() + body +
+      "<div class='modal-buttons'>" +
+      "<span id='imp-count' class='imp-count'></span>" +
+      "<button type='button' id='imp-cancel'>キャンセル</button>" +
+      "<button type='button' id='imp-exec' class='primary'>取込実行</button></div>";
+
+    document.getElementById("imp-cancel").addEventListener("click", closeModal);
+    document.getElementById("imp-exec").addEventListener("click", executeImport);
+    var checks = $modal.querySelectorAll(".imp-check");
+    for (var i = 0; i < checks.length; i++) checks[i].addEventListener("change", updateImportCount);
+    updateImportCount();
+  }
+
+  function importRowHtml(ev, idx) {
+    var remembered = importState.importMap[ev.title];
+    var assignHtml;
+    if (ev.allDay) {
+      assignHtml = "<span class='imp-fixed'>日メモとして取込</span>";
+    } else {
+      var selValue = "";
+      if (remembered && remembered.code && remembered.code !== "DAYMEMO") {
+        selValue = remembered.sub ? remembered.code + "|" + remembered.sub : remembered.code;
+      }
+      assignHtml = importCategorySelectHtml(selValue);
+    }
+    return "<tr data-idx='" + idx + "'>" +
+      "<td><input type='checkbox' class='imp-check'" + (remembered ? " checked" : "") + "></td>" +
+      "<td class='imp-when'>" + escapeHtml(importDateTimeLabel(ev)) + "</td>" +
+      "<td>" + escapeHtml(ev.title) + (ev.calendarName ? " <span class='imp-cal'>(" + escapeHtml(ev.calendarName) + ")</span>" : "") + "</td>" +
+      "<td>" + assignHtml + "</td>" +
+      "<td>" + importStatusHtml(ev) + "</td>" +
+      "</tr>";
+  }
+
+  // 有効な大区分をoptgroup、内訳を子optionにしたセレクト。値は "CODE" または "CODE|SUB"
+  function importCategorySelectHtml(selValue) {
+    var html = "<select class='imp-cat-select'><option value=''>(区分を選択)</option>";
+    activeParents().forEach(function (cat) {
+      var children = activeChildrenOf(cat.code);
+      var parentOpt = "<option value='" + escapeAttr(cat.code) + "'" +
+        (selValue === cat.code ? " selected" : "") + ">" + escapeHtml(cat.code + " " + cat.name) +
+        (children.length ? "(全般)" : "") + "</option>";
+      if (!children.length) { html += parentOpt; return; }
+      html += "<optgroup label='" + escapeHtml(cat.code + " " + cat.name) + "'>" + parentOpt;
+      children.forEach(function (ch) {
+        var val = cat.code + "|" + ch.code;
+        html += "<option value='" + escapeAttr(val) + "'" + (selValue === val ? " selected" : "") + ">" +
+          escapeHtml(ch.name) + "</option>";
+      });
+      html += "</optgroup>";
+    });
+    html += "</select>";
+    return html;
+  }
+
+  function importDateTimeLabel(ev) {
+    if (ev.allDay) return formatDateJp(ev.date) + " 終日";
+    var date = ev.start.substring(0, 10);
+    return formatDateJp(date) + " " + ev.start.substring(11) + "-" + ev.end.substring(11);
+  }
+
+  function importStatusHtml(ev) {
+    if (ev.allDay) return "";
+    var marks = [];
+    var slots = importTimedSlots(ev);
+    if (slots.times.some(function (t) { return !!state.records[slots.date + "|" + t]; })) {
+      marks.push("<span class='imp-overwrite'>上書き</span>");
+    }
+    var dayStart = timeToMin(state.config.dayStart), dayEnd = timeToMin(state.config.dayEnd);
+    if (slots.times.some(function (t) { var m = timeToMin(t); return m < dayStart || m >= dayEnd; })) {
+      marks.push("<span class='imp-outside'>⚠時間帯外含む</span>");
+    }
+    return marks.join(" ");
+  }
+
+  // 時間付きイベント→30分丸めのスロット時刻群(開始=切り下げ/終了=切り上げ/日またぎは開始日23:59で打ち切り)
+  function importTimedSlots(ev) {
+    var date = ev.start.substring(0, 10);
+    var startMin = timeToMin(ev.start.substring(11));
+    var endMin = ev.end.substring(0, 10) !== date ? 24 * 60 : timeToMin(ev.end.substring(11));
+    var s = Math.floor(startMin / 30) * 30;
+    var e = Math.min(Math.ceil(endMin / 30) * 30, 24 * 60);
+    if (e <= s) e = s + 30; // 0分イベントでも最低1スロット
+    var times = [];
+    for (var t = s; t < e; t += 30) times.push(minToTime(t));
+    return { date: date, times: times };
+  }
+
+  function updateImportCount() {
+    var n = $modal.querySelectorAll(".imp-check:checked").length;
+    var el = document.getElementById("imp-count");
+    if (el) el.textContent = n + "件選択中";
+  }
+
+  function executeImport() {
+    var trs = document.querySelectorAll("#imp-tbody tr");
+    var picked = [];
+    for (var i = 0; i < trs.length; i++) {
+      var tr = trs[i];
+      if (!tr.querySelector(".imp-check").checked) continue;
+      var ev = importState.events[parseInt(tr.dataset.idx, 10)];
+      var entry = { event: ev, code: "", sub: "" };
+      if (!ev.allDay) {
+        var sel = tr.querySelector(".imp-cat-select").value;
+        if (!sel) { showToast("区分未選択の行があります(「" + ev.title + "」)", true); return; }
+        var parts = sel.split("|");
+        entry.code = parts[0];
+        entry.sub = parts[1] || "";
+      }
+      picked.push(entry);
+    }
+    if (!picked.length) { showToast("取り込む予定にチェックを入れてください", false); return; }
+
+    pushUndo("both");
+    var recordsChanged = false, daysChanged = false;
+    picked.forEach(function (entry) {
+      var ev = entry.event;
+      if (ev.allDay) {
+        var info = state.days[ev.date] || { paidLeave: false, memo: "" };
+        var parts = info.memo ? info.memo.split("・") : [];
+        if (parts.indexOf(ev.title) < 0) {
+          parts.push(ev.title);
+          state.days[ev.date] = { paidLeave: info.paidLeave, memo: parts.join("・") };
+          daysChanged = true;
+        }
+      } else {
+        var slots = importTimedSlots(ev);
+        slots.times.forEach(function (t) {
+          state.records[slots.date + "|" + t] = { code: entry.code, sub: entry.sub, memo: "" };
+        });
+        recordsChanged = true;
+      }
+    });
+    if (recordsChanged) markRecordsDirty();
+    if (daysChanged) markDaysDirty();
+
+    // 記憶の保存は失敗しても取込自体は成立させる(トーストのみで通知)
+    var mapEntries = picked.map(function (entry) {
+      return entry.event.allDay
+        ? { title: entry.event.title, code: "DAYMEMO", sub: "" }
+        : { title: entry.event.title, code: entry.code, sub: entry.sub };
+    });
+    serverCall("saveImportMap", mapEntries).catch(function (err) {
+      handleServerError(err, "取込対応の記憶保存に失敗しました(取込自体は反映済みです)");
+    });
+
+    closeModal();
+    renderGrid();
+    renderSummary();
+    showToast(picked.length + "件取り込みました", false);
   }
 
   /* ===== 集計 ===== */

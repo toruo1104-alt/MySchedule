@@ -53,7 +53,9 @@ function doPost(e) {
       getMonthData: getMonthData,
       saveMonthRecords: saveMonthRecords,
       saveMonthDays: saveMonthDays,
-      saveCategories: saveCategories
+      saveCategories: saveCategories,
+      listCalendarEvents: listCalendarEvents,
+      saveImportMap: saveImportMap
     };
     var fn = String(req.fn || '');
     if (!API[fn]) throw new Error('不明なAPI: ' + fn);
@@ -349,6 +351,99 @@ function rowComparator_(a, b) {
   if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
   var t1 = String(a[1] || ''), t2 = String(b[1] || '');
   return t1 === t2 ? 0 : (t1 < t2 ? -1 : 1);
+}
+
+/* ===== カレンダー取込API(フェーズ3) ===== */
+
+// その月のカレンダーイベント一覧+タイトル→区分の記憶(importMap)を返す。ym = 'yyyy-MM'
+function listCalendarEvents(ym) {
+  ym = String(ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
+  ensureSetup_();
+  var year = parseInt(ym.substring(0, 4), 10);
+  var month = parseInt(ym.substring(5, 7), 10);
+  var from = new Date(year, month - 1, 1);
+  var to = new Date(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1);
+
+  var calendars = [];
+  var defCal = CalendarApp.getDefaultCalendar();
+  if (defCal) calendars.push(defCal);
+  String(readConfigValue_('calendarIds') || '').split(',')
+    .map(function (s) { return s.trim(); })
+    .filter(function (id) { return id && id !== HOLIDAY_CALENDAR_ID; })
+    .forEach(function (id) {
+      try {
+        var cal = CalendarApp.getCalendarById(id);
+        if (cal) calendars.push(cal);
+      } catch (e) { /* 取得失敗のIDはスキップ(落とさない) */ }
+    });
+
+  var events = [];
+  calendars.forEach(function (cal) {
+    var calName = cal.getName();
+    cal.getEvents(from, to).forEach(function (ev) {
+      if (ev.isAllDayEvent()) {
+        events.push({
+          title: ev.getTitle(),
+          start: '', end: '',
+          allDay: true,
+          date: Utilities.formatDate(ev.getAllDayStartDate(), TZ, 'yyyy-MM-dd'),
+          calendarName: calName
+        });
+      } else {
+        events.push({
+          title: ev.getTitle(),
+          start: Utilities.formatDate(ev.getStartTime(), TZ, 'yyyy-MM-dd HH:mm'),
+          end: Utilities.formatDate(ev.getEndTime(), TZ, 'yyyy-MM-dd HH:mm'),
+          allDay: false,
+          date: '',
+          calendarName: calName
+        });
+      }
+    });
+  });
+  events.sort(function (a, b) {
+    var ka = a.allDay ? a.date + ' 00:00' : a.start;
+    var kb = b.allDay ? b.date + ' 00:00' : b.start;
+    return ka === kb ? 0 : (ka < kb ? -1 : 1);
+  });
+
+  return { events: events, importMap: readImportMap_() };
+}
+
+function readImportMap_() {
+  var data = sheet_(SHEETS.IMPORT_MAP).getDataRange().getValues();
+  var out = {};
+  for (var i = 1; i < data.length; i++) {
+    var title = String(data[i][0] || '');
+    if (!title) continue;
+    out[title] = { code: String(data[i][1] || ''), sub: String(data[i][2] || '') };
+  }
+  return out;
+}
+
+// タイトル→区分の記憶をupsert保存。entries = [{title, code, sub}]
+function saveImportMap(entries) {
+  entries = entries || [];
+  if (!entries.length) return { ok: true, count: 0 };
+  var sh = sheet_(SHEETS.IMPORT_MAP);
+  var data = sh.getDataRange().getValues();
+  var map = {};    // タイトル → 行データ([title, code, sub])
+  var order = [];  // 書き戻し順(既存行の順序を保ち、新規は末尾)
+  for (var i = 1; i < data.length; i++) {
+    var title = String(data[i][0] || '');
+    if (!title) continue;
+    map[title] = [title, String(data[i][1] || ''), String(data[i][2] || '')];
+    order.push(title);
+  }
+  entries.forEach(function (e) {
+    if (!e || !e.title) return;
+    if (!map[e.title]) order.push(e.title);
+    map[e.title] = [String(e.title), String(e.code || ''), String(e.sub || '')];
+  });
+  var rows = order.map(function (t) { return map[t]; });
+  writeAllRows_(sh, rows, 3, data.length - 1);
+  return { ok: true, count: entries.length };
 }
 
 /* ===== 祝日(Googleの日本の祝日カレンダーから年単位で取得・キャッシュ) ===== */

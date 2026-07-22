@@ -49,7 +49,11 @@
   function loadDb() {
     try {
       var raw = localStorage.getItem(LS_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        var db = JSON.parse(raw);
+        db.importMap = db.importMap || {}; // 旧データ互換(フェーズ3で追加)
+        return db;
+      }
     } catch (e) { /* 壊れていたら作り直す */ }
     return seedDb();
   }
@@ -60,7 +64,7 @@
 
   // 初期サンプル: 今月の最初の平日3日分にそれらしい記録を入れる
   function seedDb() {
-    var db = { categories: DEFAULT_CATEGORIES, records: [], days: [] };
+    var db = { categories: DEFAULT_CATEGORIES, records: [], days: [], importMap: {} };
     var now = new Date();
     var y = now.getFullYear(), m = now.getMonth();
     var seeded = 0;
@@ -128,8 +132,65 @@
       db.categories = categories || [];
       saveDb(db);
       return { ok: true, count: (categories || []).length };
+    },
+
+    listCalendarEvents: function (ym) {
+      var db = loadDb();
+      return { events: sampleEventsForMonth(ym), importMap: db.importMap };
+    },
+
+    saveImportMap: function (entries) {
+      var db = loadDb();
+      (entries || []).forEach(function (e) {
+        if (!e || !e.title) return;
+        db.importMap[e.title] = { code: e.code || "", sub: e.sub || "" };
+      });
+      saveDb(db);
+      return { ok: true, count: (entries || []).length };
     }
   };
+
+  // 検証ケースを網羅するサンプルイベントを表示月から動的生成(本番はGoogleカレンダーから取得)
+  //   出勤(9:15-17:45): 30分丸め検証。歯医者(14:00-15:00): 出勤日と重ね上書きバッジ検証。
+  //   燃えるごみ(終日・火曜2-3件): 日メモ取込検証。歓迎会: 通常ケース。早朝会議(5:30-6:30): 時間帯外注記検証。
+  function sampleEventsForMonth(ym) {
+    var y = parseInt(ym.substring(0, 4), 10);
+    var m = parseInt(ym.substring(5, 7), 10);
+    var daysInMonth = new Date(y, m, 0).getDate();
+    var weekdays = [];
+    var tuesdays = [];
+    for (var d = 1; d <= daysInMonth; d++) {
+      var dt = new Date(y, m - 1, d);
+      var dow = dt.getDay();
+      var dateStr = ymd(dt);
+      if (dow === 2) tuesdays.push(dateStr);
+      if (dow >= 1 && dow <= 5 && !HOLIDAYS_2026[dateStr]) weekdays.push(dateStr);
+    }
+    var events = [];
+    if (weekdays[0]) {
+      events.push(mkTimedEvent("出勤", weekdays[0], "09:15", "17:45"));
+      events.push(mkTimedEvent("歯医者", weekdays[0], "14:00", "15:00"));
+    }
+    if (weekdays[1]) events.push(mkTimedEvent("歓迎会", weekdays[1], "18:30", "20:30"));
+    if (weekdays[2]) events.push(mkTimedEvent("早朝会議", weekdays[2], "05:30", "06:30"));
+    tuesdays.slice(0, 3).forEach(function (dateStr) {
+      events.push(mkAllDayEvent("燃えるごみ", dateStr));
+    });
+    events.sort(function (a, b) {
+      var ka = a.allDay ? a.date + " 00:00" : a.start;
+      var kb = b.allDay ? b.date + " 00:00" : b.start;
+      return ka === kb ? 0 : (ka < kb ? -1 : 1);
+    });
+    return events;
+  }
+
+  function mkTimedEvent(title, date, from, to) {
+    return { title: title, start: date + " " + from, end: date + " " + to, allDay: false, date: "", calendarName: "メイン" };
+  }
+
+  function mkAllDayEvent(title, date) {
+    return { title: title, start: "", end: "", allDay: true, date: date, calendarName: "メイン" };
+  }
 
   /* ---- serverCall フック(app.js が参照する) ---- */
 
