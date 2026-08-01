@@ -124,6 +124,33 @@ main {
 
 .tb-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
+/* 「⋯」メニュー(区分編集・取込・設定を集約。.pal-sub-menuと同じ見た目の型を踏襲) */
+.tb-more-wrap { position: relative; }
+.tb-more-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #999;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  z-index: 40;
+  min-width: 130px;
+  padding: 4px;
+  gap: 2px;
+}
+.tb-more-menu button {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 5px 10px;
+  color: #223;
+}
+.tb-more-menu button:hover { background: #eef3f8; }
+
 #save-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
 #save-status.is-saved  { background: #d7f5dd; color: #063; }
 #save-status.is-saving { background: #ffe9a8; color: #764d00; }
@@ -240,7 +267,13 @@ td.is-today { border-right-color: #e8c76a; }
 
 #week-view { margin-top: 8px; }
 #week-header { display: flex; justify-content: flex-end; margin-bottom: 4px; }
-#week-container { position: relative; overflow: auto; max-height: calc(100vh - 60px - 120px); background: #fff; border: 1px solid #b5bcc4; }
+/* 画面いっぱいに使う(スマホ常用を想定)。dvh未対応環境はvhにフォールバック */
+#week-container {
+  position: relative; overflow: auto;
+  height: calc(100vh - 150px);
+  height: calc(100dvh - 150px);
+  background: #fff; border: 1px solid #b5bcc4;
+}
 #week-loading {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -248,19 +281,21 @@ td.is-today { border-right-color: #e8c76a; }
   font-weight: bold; z-index: 20;
 }
 
-.wk-grid { display: flex; min-width: 760px; }
+.wk-grid { display: flex; min-width: 760px; position: relative; }
 
 .wk-error { padding: 24px 12px; text-align: center; color: #667; }
 
-/* 左端の時間軸 */
-.wk-time-axis { width: 46px; min-width: 46px; flex: none; position: sticky; left: 0; z-index: 6; background: #edf0f4; border-right: 1px solid #9aa2ac; }
-.wk-time-axis-head { height: 56px; border-bottom: 2px solid #9aa2ac; }
+/* 左端の時間軸(左sticky)。見出し部分は縦スクロールでも上にsticky(曜日ヘッダーと二重固定) */
+.wk-time-axis { width: 46px; min-width: 46px; flex: none; position: sticky; left: 0; z-index: 16; background: #edf0f4; border-right: 1px solid #9aa2ac; }
+.wk-time-axis-head { position: sticky; top: 0; z-index: 16; height: 56px; border-bottom: 2px solid #9aa2ac; background: #edf0f4; }
 .wk-time-axis-body { position: relative; }
 .wk-hour-label { position: absolute; left: 2px; transform: translateY(-50%); font-size: 10px; color: #445; white-space: nowrap; }
 
 /* 日列 */
 .wk-day-col { flex: 1 1 0; min-width: 100px; border-right: 1px solid #cdd3da; }
+/* 曜日ヘッダー・終日/タスク帯は縦スクロールで上にsticky(下にwk-day-bodyが流れる) */
 .wk-day-head {
+  position: sticky; top: 0; z-index: 12;
   height: 56px; padding: 4px; box-sizing: border-box;
   border-bottom: 2px solid #9aa2ac; background: #edf0f4;
   font-size: 11px; text-align: center;
@@ -269,17 +304,21 @@ td.is-today { border-right-color: #e8c76a; }
 .wk-day-d { display: block; font-weight: bold; }
 .wk-day-holiday-name { display: block; font-size: 9px; color: #a05; }
 
-.wk-day-strip { min-height: 18px; padding: 2px 3px; border-bottom: 1px solid #e2e6ea; background: #fafbfc; }
+.wk-day-strip {
+  position: sticky; top: 56px; z-index: 11;
+  min-height: 18px; padding: 2px 3px; border-bottom: 1px solid #e2e6ea; background: #fafbfc;
+}
 .wk-badge-allday, .wk-badge-task {
   display: block; font-size: 10px; line-height: 1.5; padding: 0 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer;
 }
 .wk-badge-allday { color: #764d00; }
 .wk-badge-task { color: #445; }
 
 .wk-day-body { position: relative; }
 
-/* ベース層(繰り返し予定): 全幅・薄いグレーブルーの帯 */
+/* ベース層(繰り返し予定): 全幅・薄いグレーブルーの帯。色付きイベントはインラインstyleでrgba背景+左バーを上書き */
 .wk-base {
   position: absolute;
   background: #dde3ea;
@@ -291,9 +330,10 @@ td.is-today { border-right-color: #e8c76a; }
   overflow: hidden;
   white-space: nowrap;
   box-sizing: border-box;
+  cursor: pointer;
 }
 
-/* 前面カード(単発予定): 白背景+濃い枠+影でベースの上に重ねる */
+/* 前面カード(単発予定): 白背景+濃い枠+影でベースの上に重ねる。色付きイベントは同様にインラインstyleで上書き */
 .wk-card {
   position: absolute;
   background: #fff;
@@ -307,8 +347,19 @@ td.is-today { border-right-color: #e8c76a; }
   white-space: nowrap;
   z-index: 3;
   box-sizing: border-box;
+  cursor: pointer;
 }
 .wk-ev-time { font-size: 9px; color: #667; }
+
+/* 現在時刻ライン(今日を含む週のみ描画。sticky見出しより低いz-indexにして、スクロールで見出しの下に隠れるようにする) */
+.wk-now-line {
+  position: absolute; left: 46px; right: 0; height: 2px;
+  background: #ea4335; z-index: 8; pointer-events: none;
+}
+.wk-now-dot {
+  position: absolute; left: -4px; width: 8px; height: 8px; margin-top: -3px;
+  border-radius: 50%; background: #ea4335; z-index: 8; pointer-events: none;
+}
 
 /* 曜日・祝日・有休の背景色(月グリッドと統一) */
 .wk-day-head.day-sat, .wk-day-body.day-sat { background: #dbe7f5; }
@@ -317,7 +368,7 @@ td.is-today { border-right-color: #e8c76a; }
 .wk-day-head.day-paidleave, .wk-day-body.day-paidleave { background: #faf3d1; }
 
 @media (max-width: 700px) {
-  #week-container { max-height: calc(100vh - 220px); }
+  #week-container { height: calc(100vh - 130px); height: calc(100dvh - 130px); }
 }
 
 /* ===== 集計パネル ===== */

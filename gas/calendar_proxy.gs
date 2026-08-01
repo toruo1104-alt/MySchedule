@@ -26,6 +26,13 @@
 var HOLIDAY_CALENDAR_ID = 'ja.japanese#holiday@group.v.calendar.google.com';
 var TZ = 'Asia/Tokyo';
 
+// Googleカレンダー標準11色(CalendarApp.Color)→表示用hexのマップ。
+// イベント自身の色が未設定(既定)の場合はカレンダー自体の色(calColorHex)にフォールバックする。
+var EVENT_COLOR_HEX = {
+  1: '#7986cb', 2: '#33b679', 3: '#8e24aa', 4: '#e67c73', 5: '#f6bf26',
+  6: '#f4511e', 7: '#039be5', 8: '#616161', 9: '#3f51b5', 10: '#0b8043', 11: '#d50000'
+};
+
 /* ===== API 入口 ===== */
 
 // 死活確認用(ブラウザでURLを開くと表示される)
@@ -111,14 +118,17 @@ function listCalendarEvents(ym, calendarIds) {
   var events = [];
   calendars.forEach(function (cal) {
     var calName = cal.getName();
+    var calColorHex = calendarColorHex_(cal);
     cal.getEvents(from, to).forEach(function (ev) {
+      var color = eventColorHex_(ev, calColorHex);
       if (ev.isAllDayEvent()) {
         events.push({
           title: ev.getTitle(),
           start: '', end: '',
           allDay: true,
           date: Utilities.formatDate(ev.getAllDayStartDate(), TZ, 'yyyy-MM-dd'),
-          calendarName: calName
+          calendarName: calName,
+          color: color
         });
       } else {
         events.push({
@@ -127,7 +137,8 @@ function listCalendarEvents(ym, calendarIds) {
           end: Utilities.formatDate(ev.getEndTime(), TZ, 'yyyy-MM-dd HH:mm'),
           allDay: false,
           date: '',
-          calendarName: calName
+          calendarName: calName,
+          color: color
         });
       }
     });
@@ -139,6 +150,25 @@ function listCalendarEvents(ym, calendarIds) {
   });
 
   return { events: events };
+}
+
+// カレンダー自体の色をhexで返す(取得失敗時は空文字)。
+// Calendar.getColor() は「#rrggbb」のhex文字列を返す仕様(イベントの1〜11インデックスとは別)なので、
+// hexならそのまま採用し、万一インデックスで返る環境ではマップで変換する
+function calendarColorHex_(cal) {
+  try {
+    var c = String(cal.getColor() || '');
+    if (!c) return '';
+    if (c.charAt(0) === '#') return c;
+    return EVENT_COLOR_HEX[c] || '';
+  } catch (e) { return ''; }
+}
+
+// イベント個別の色(未設定ならカレンダー色にフォールバック)をhexで返す
+function eventColorHex_(ev, calColorHex) {
+  var evColor;
+  try { evColor = ev.getColor(); } catch (e) { evColor = null; }
+  return evColor ? (EVENT_COLOR_HEX[evColor] || '') : (calColorHex || '');
 }
 
 /* ===== 週ビューAPI =====
@@ -170,7 +200,9 @@ function collectWeekEvents_(fromDate, toDate, calendarIds) {
   var events = [];
   calendars.forEach(function (cal) {
     var calName = cal.getName();
+    var calColorHex = calendarColorHex_(cal);
     cal.getEvents(fromDate, toDate).forEach(function (ev) {
+      var color = eventColorHex_(ev, calColorHex);
       if (ev.isAllDayEvent()) {
         events.push({
           title: ev.getTitle(),
@@ -178,7 +210,8 @@ function collectWeekEvents_(fromDate, toDate, calendarIds) {
           allDay: true,
           date: Utilities.formatDate(ev.getAllDayStartDate(), TZ, 'yyyy-MM-dd'),
           calendarName: calName,
-          recurring: ev.isRecurringEvent()
+          recurring: ev.isRecurringEvent(),
+          color: color
         });
       } else {
         events.push({
@@ -188,7 +221,8 @@ function collectWeekEvents_(fromDate, toDate, calendarIds) {
           allDay: false,
           date: '',
           calendarName: calName,
-          recurring: ev.isRecurringEvent()
+          recurring: ev.isRecurringEvent(),
+          color: color
         });
       }
     });

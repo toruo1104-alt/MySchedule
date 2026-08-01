@@ -199,24 +199,25 @@
   }
 
   // 繰り返し予定の帯(平日に並ぶ)+単発予定(重なりを含む)+終日予定のサンプル
+  // color は本番同様Googleカレンダー標準11色のhex(空文字=色未設定の従来配色を確認するケースも混ぜる)
   function sampleWeekEvents(dates) {
     var events = [];
     dates.forEach(function (dateStr, i) {
       if (i <= 4) { // 月〜金相当: 繰り返しの勤務予定を帯として並べる
-        events.push(mkWeekEvent("UB定例", dateStr, "09:00", "18:00", true, "メイン"));
+        events.push(mkWeekEvent("UB定例", dateStr, "09:00", "18:00", true, "メイン", "#7986cb"));
       }
     });
-    if (dates[0]) events.push(mkWeekEvent("来客対応", dates[0], "14:00", "15:00", false, "メイン")); // ベースと重なる前面カード
+    if (dates[0]) events.push(mkWeekEvent("来客対応", dates[0], "14:00", "15:00", false, "メイン", "#e67c73")); // ベースと重なる前面カード
     if (dates[1]) {
-      events.push(mkWeekEvent("打合せA", dates[1], "10:00", "11:00", false, "メイン"));
-      events.push(mkWeekEvent("打合せB", dates[1], "10:30", "11:30", false, "サブ")); // 前面カード同士の重なり
+      events.push(mkWeekEvent("打合せA", dates[1], "10:00", "11:00", false, "メイン", "#33b679"));
+      events.push(mkWeekEvent("打合せB", dates[1], "10:30", "11:30", false, "サブ", "")); // 前面カード同士の重なり。色空欄=従来配色の確認用
     }
-    if (dates[2]) events.push({ title: "健康診断", start: "", end: "", allDay: true, date: dates[2], calendarName: "メイン", recurring: false });
+    if (dates[2]) events.push({ title: "健康診断", start: "", end: "", allDay: true, date: dates[2], calendarName: "メイン", recurring: false, color: "#f6bf26" });
     return events;
   }
 
-  function mkWeekEvent(title, date, from, to, recurring, calName) {
-    return { title: title, start: date + " " + from, end: date + " " + to, allDay: false, date: "", calendarName: calName, recurring: recurring };
+  function mkWeekEvent(title, date, from, to, recurring, calName, color) {
+    return { title: title, start: date + " " + from, end: date + " " + to, allDay: false, date: "", calendarName: calName, recurring: recurring, color: color || "" };
   }
 
   function sampleWeekTasks(dates) {

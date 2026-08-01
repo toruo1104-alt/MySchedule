@@ -30,10 +30,15 @@
       <div id="palette" class="tb-palette"></div>
 
       <div class="tb-actions">
-        <button type="button" id="btn-categories">区分編集</button>
-        <button type="button" id="btn-import" title="Googleカレンダーの予定を取り込む">取込</button>
-        <button type="button" id="btn-settings" title="API設定">⚙</button>
         <span id="save-status" class="is-saved" title="保存状態">保存済み</span>
+        <div class="tb-more-wrap">
+          <button type="button" id="btn-more" title="その他の操作(区分編集・取込・設定)">⋯</button>
+          <div id="more-menu" class="tb-more-menu" hidden>
+            <button type="button" id="btn-categories">区分編集</button>
+            <button type="button" id="btn-import" title="Googleカレンダーの予定を取り込む">取込</button>
+            <button type="button" id="btn-settings" title="API設定">⚙ 設定</button>
+          </div>
+        </div>
       </div>
     </header>
 

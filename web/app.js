@@ -29,6 +29,10 @@
   var PALETTE_KEY = "myschedule-palette";     // パレット折りたたみ状態
   var VIEW_KEY = "myschedule-view";           // 表示中ビュー(月/週)の永続化キー
   var WEEK_PX_PER_HOUR = 48;                  // 週ビュー: 1時間あたりの高さ(px)
+  var WEEK_INITIAL_SCROLL_HOUR = 6;           // 週ビュー: 初期スクロール先の時刻(既定06:00)
+  var WEEK_NOW_HOUR_OFFSET = 2;               // 週ビュー: 今日を含む週での初期スクロール = 現在時刻-2h
+  var WEEK_NOW_LINE_INTERVAL_MS = 60000;      // 週ビュー: 現在時刻ラインの更新間隔(1分)
+  var WEEK_SWIPE_MIN_PX = 50;                 // 週ビュー: スワイプ判定の最小横移動量(px)
   var WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
   /* ===== 状態 ===== */
@@ -49,6 +53,9 @@
   var apiSettings = null;                     // {url, token}
   var weekCache = new Map();                  // weekStart → listWeekData の返り値(セッション内メモリキャッシュ)
   var monthLoaded = false;                    // 月データを一度でも読み込み済みか(週→月切替時の再読込要否判定)
+  var weekLastLoadedStart = null;             // 直前にレンダリングした週の開始日(週が変わった判定用。同一週なら現在のスクロール位置を維持する)
+  var weekNowLineTimer = null;                // 現在時刻ラインの更新用setInterval ID(週ビューを離れたらclear)
+  var weekTouchStart = null;                  // スワイプ判定用の開始タッチ位置 {x, y}
 
   /* 保存管理 */
   var saveTimer = null;
@@ -70,9 +77,11 @@
   var $summary = document.getElementById("summary");
   var $weekView = document.getElementById("week-view");
   var $weekLoading = document.getElementById("week-loading");
+  var $weekContainer = document.getElementById("week-container");
   var $weekGrid = document.getElementById("week-grid");
   var $weekTasksNote = document.getElementById("week-tasks-note");
   var $palette = document.getElementById("palette");
+  var $moreMenu = document.getElementById("more-menu");
   var $ymLabel = document.getElementById("ym-label");
   var $saveStatus = document.getElementById("save-status");
   var $popover = document.getElementById("popover");
@@ -98,9 +107,13 @@
     document.getElementById("btn-today").addEventListener("click", function () {
       if (state.view === "week") navWeekToday(); else navTo(state.todayStr.substring(0, 7));
     });
-    document.getElementById("btn-categories").addEventListener("click", openCategoryModal);
-    document.getElementById("btn-import").addEventListener("click", openImportModal);
-    document.getElementById("btn-settings").addEventListener("click", openSettingsModal);
+    document.getElementById("btn-categories").addEventListener("click", function () { closeMoreMenu(); openCategoryModal(); });
+    document.getElementById("btn-import").addEventListener("click", function () { closeMoreMenu(); openImportModal(); });
+    document.getElementById("btn-settings").addEventListener("click", function () { closeMoreMenu(); openSettingsModal(); });
+    document.getElementById("btn-more").addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      setMoreMenuOpen($moreMenu.hidden);
+    });
     document.getElementById("btn-undo").addEventListener("click", undo);
     document.getElementById("btn-toggle-palette").addEventListener("click", function () {
       setPaletteCollapsed(!$palette.classList.contains("is-collapsed"));
@@ -118,6 +131,7 @@
     });
 
     bindGridEvents();
+    bindWeekEvents();
     bindGlobalEvents();
     renderYmLabel();
 
@@ -147,8 +161,9 @@
     renderYmLabel();
     if (view === "week") {
       loadWeek(state.weekStart); // hasApiAccess()の判定・設定モーダル誘導はloadWeek内で行う
-    } else if (!monthLoaded) {
-      loadMonth(state.ym); // 起動時に週ビューだったなどで月データが未読込のときだけ読み込む
+    } else {
+      stopNowLineTimer(); // 週ビューを離れるので現在時刻ラインの更新を止める
+      if (!monthLoaded) loadMonth(state.ym); // 起動時に週ビューだったなどで月データが未読込のときだけ読み込む
     }
   }
 
@@ -484,6 +499,20 @@
     state.tool = tool;
     closeSubMenus();
     renderPalette();
+  }
+
+  /* ===== ツールバー「⋯」メニュー(区分編集・取込・設定を集約) ===== */
+
+  function setMoreMenuOpen(open) {
+    $moreMenu.hidden = !open;
+    document.getElementById("btn-more").classList.toggle("is-active", open);
+  }
+
+  // Esc・外側クリックで閉じる用。閉じた場合はtrueを返す(Esc連鎖の判定に使う)
+  function closeMoreMenu() {
+    if ($moreMenu.hidden) return false;
+    setMoreMenuOpen(false);
+    return true;
   }
 
   /* ===== グリッド描画 ===== */
@@ -1296,8 +1325,13 @@
 
   function loadWeek(weekStart) {
     if (!hasApiAccess()) { openSettingsModal(); return; }
+    // 週が変わった場合だけ縦・横スクロールを初期位置に戻す(同一週の再読込・再描画では
+    // ユーザーがスクロールした位置をそのまま維持する。$weekGridのinnerHTML置換だけでは
+    // スクロールコンテナ側のscrollTop/scrollLeftは変わらないため、変えたい時だけ明示的に設定する)
+    var weekChanged = weekLastLoadedStart !== weekStart;
+    weekLastLoadedStart = weekStart;
     var cached = weekCache.get(weekStart);
-    if (cached) { renderWeekView(cached); return; }
+    if (cached) { renderWeekView(cached, weekChanged); return; }
     $weekLoading.hidden = false;
     $weekGrid.innerHTML = "";
     var from = weekStart;
@@ -1305,7 +1339,7 @@
     serverCall("listWeekData", from, to)
       .then(function (data) {
         weekCache.set(weekStart, data);
-        if (weekStart === state.weekStart) renderWeekView(data);
+        if (weekStart === state.weekStart) renderWeekView(data, weekChanged);
       })
       .catch(function (err) {
         handleServerError(err, "週データの読み込みに失敗しました");
@@ -1314,19 +1348,29 @@
       .finally(function () { $weekLoading.hidden = true; });
   }
 
-  // 表示範囲(時間軸)の開始・終了分を、config既定値とはみ出す予定に合わせて時間単位で決める
-  function weekTimeRange(events) {
-    var startMin = timeToMin(state.config.dayStart);
-    var endMin = timeToMin(state.config.dayEnd);
-    events.forEach(function (ev) {
-      if (ev.allDay) return;
-      var s = timeToMin(ev.start.substring(11));
-      var sameDay = ev.end.substring(0, 10) === ev.start.substring(0, 10);
-      var e = sameDay ? timeToMin(ev.end.substring(11)) : 24 * 60;
-      startMin = Math.min(startMin, Math.floor(s / 60) * 60);
-      endMin = Math.max(endMin, Math.min(24 * 60, Math.ceil(e / 60) * 60));
-    });
-    return { startMin: startMin, endMin: endMin };
+  // 表示範囲(時間軸)は00:00〜24:00固定(スマホでの実用性優先。スクロールで見る設計)
+  function weekTimeRange() {
+    return { startMin: 0, endMin: 24 * 60 };
+  }
+
+  // 週ビューの初期縦スクロール位置(px)。表示中の週に今日が含まれる場合は
+  // 「現在時刻-2時間」を優先し、それ以外はWEEK_INITIAL_SCROLL_HOUR(既定06:00)
+  function weekInitialScrollTop(weekStart) {
+    var hour = WEEK_INITIAL_SCROLL_HOUR;
+    var now = new Date();
+    if (weekDates(weekStart).some(function (d) { return d.date === state.todayStr; })) {
+      hour = Math.max(0, Math.min(24, now.getHours() - WEEK_NOW_HOUR_OFFSET));
+    }
+    return hour * WEEK_PX_PER_HOUR;
+  }
+
+  // スマホ幅で列が画面外にはみ出す場合に備え、今日の列が見えるよう横スクロール位置を初期化
+  function scrollTodayIntoView() {
+    var col = $weekGrid.querySelector(".wk-day-col.is-today-col");
+    if (!col) return;
+    var containerWidth = $weekContainer.clientWidth;
+    var target = col.offsetLeft - (containerWidth - col.offsetWidth) / 2;
+    $weekContainer.scrollLeft = Math.max(0, target);
   }
 
   function weekMinToPx(min, startMin) {
@@ -1370,11 +1414,12 @@
     return out;
   }
 
-  function renderWeekView(data) {
+  function renderWeekView(data, weekChanged) {
     var dates = weekDates(state.weekStart);
     var events = data.events || [];
-    var range = weekTimeRange(events);
+    var range = weekTimeRange();
     var bodyHeight = weekMinToPx(range.endMin, range.startMin);
+    var hasToday = dates.some(function (d) { return d.date === state.todayStr; });
 
     // 日付キー→そのイベント群
     var byDate = {};
@@ -1391,7 +1436,8 @@
       var endMin = sameDay ? timeToMin(ev.end.substring(11)) : 24 * 60;
       if (endMin <= startMin) endMin = startMin + 30;
       var item = { title: ev.title, calendarName: ev.calendarName, startMin: startMin, endMin: endMin,
-        startLabel: ev.start.substring(11), endLabel: sameDay ? ev.end.substring(11) : "24:00" };
+        startLabel: ev.start.substring(11), endLabel: sameDay ? ev.end.substring(11) : "24:00",
+        date: date, recurring: !!ev.recurring, color: ev.color || "" };
       (ev.recurring ? byDate[date].base : byDate[date].card).push(item);
     });
 
@@ -1411,7 +1457,8 @@
     var weekHolidays = data.holidays || {};
     dates.forEach(function (d) {
       var cls = dayClass(d, weekHolidays, true);
-      if (d.date === state.todayStr) cls += " is-today";
+      var isToday = d.date === state.todayStr;
+      if (isToday) cls += " is-today";
       var info = byDate[d.date];
       var holidayName = weekHolidays[d.date] || "";
 
@@ -1422,11 +1469,15 @@
 
       var stripHtml = "<div class='wk-day-strip'>" +
         info.allDay.map(function (ev) {
-          return "<span class='wk-badge-allday' title='" + escapeHtml(ev.title + "(" + (ev.calendarName || "") + ")") + "'>" +
+          return "<span class='wk-badge-allday' tabindex='0' " + weekDetailDataAttrs("event", {
+            title: ev.title, date: d.date, allDay: true, calendarName: ev.calendarName, recurring: ev.recurring
+          }) + " title='" + escapeHtml(ev.title + "(" + (ev.calendarName || "") + ")") + "'>" +
             escapeHtml(truncate(ev.title, 10)) + "</span>";
         }).join("") +
         (tasksAvailableForRender(data) ? tasksByDate[d.date].map(function (t) {
-          return "<span class='wk-badge-task' title='" + escapeHtml(t.title + "(" + (t.listName || "") + ")") + "'>" +
+          return "<span class='wk-badge-task' tabindex='0' " + weekDetailDataAttrs("task", {
+            title: t.title, date: t.due, listName: t.listName
+          }) + " title='" + escapeHtml(t.title + "(" + (t.listName || "") + ")") + "'>" +
             "☐ " + escapeHtml(truncate(t.title, 10)) + "</span>";
         }).join("") : "") +
         "</div>";
@@ -1436,9 +1487,11 @@
         var top = weekMinToPx(ev.startMin, range.startMin);
         var height = Math.max(weekMinToPx(ev.endMin, range.startMin) - top, 10);
         var style = "top:" + top + "px;height:" + height + "px;" +
-          (l.narrow ? "width:70%;left:30%;z-index:2;" : "width:100%;left:0;z-index:1;");
-        return "<div class='wk-base' style='" + style + "' title='" +
-          escapeHtml(ev.title + " " + ev.startLabel + "-" + ev.endLabel + "(" + (ev.calendarName || "") + ")") + "'>" +
+          (l.narrow ? "width:70%;left:30%;z-index:2;" : "width:100%;left:0;z-index:1;") +
+          weekColorStyle(ev.color, "base");
+        return "<div class='wk-base' tabindex='0' style='" + style + "' " +
+          weekDetailDataAttrs("event", { title: ev.title, date: ev.date, allDay: false, startLabel: ev.startLabel, endLabel: ev.endLabel, calendarName: ev.calendarName, recurring: ev.recurring }) +
+          " title='" + escapeHtml(ev.title + " " + ev.startLabel + "-" + ev.endLabel + "(" + (ev.calendarName || "") + ")") + "'>" +
           "<span class='wk-ev-time'>" + ev.startLabel + "</span> " + escapeHtml(truncate(ev.title, 10)) + "</div>";
       }).join("");
 
@@ -1449,22 +1502,152 @@
         var areaLeft = 15, areaWidth = 85;
         var w = areaWidth / l.cols;
         var left = areaLeft + l.col * w;
-        var style = "top:" + top + "px;height:" + height + "px;left:" + left + "%;width:" + w + "%;";
-        return "<div class='wk-card' style='" + style + "' title='" +
-          escapeHtml(ev.title + " " + ev.startLabel + "-" + ev.endLabel + "(" + (ev.calendarName || "") + ")") + "'>" +
+        var style = "top:" + top + "px;height:" + height + "px;left:" + left + "%;width:" + w + "%;" +
+          weekColorStyle(ev.color, "card");
+        return "<div class='wk-card' tabindex='0' style='" + style + "' " +
+          weekDetailDataAttrs("event", { title: ev.title, date: ev.date, allDay: false, startLabel: ev.startLabel, endLabel: ev.endLabel, calendarName: ev.calendarName, recurring: ev.recurring }) +
+          " title='" + escapeHtml(ev.title + " " + ev.startLabel + "-" + ev.endLabel + "(" + (ev.calendarName || "") + ")") + "'>" +
           "<span class='wk-ev-time'>" + ev.startLabel + "</span> " + escapeHtml(truncate(ev.title, 10)) + "</div>";
       }).join("");
 
-      html.push("<div class='wk-day-col'>" + headHtml + stripHtml +
-        "<div class='wk-day-body " + cls + "' style='height:" + bodyHeight + "px'>" + baseHtml + cardHtml + "</div></div>");
+      var nowLineHtml = "";
+      if (isToday) {
+        var nowTop = weekMinToPx(nowMinutesOfDay(), range.startMin);
+        nowLineHtml = "<div class='wk-now-dot' id='wk-now-dot' style='top:" + nowTop + "px'></div>";
+      }
+
+      html.push("<div class='wk-day-col" + (isToday ? " is-today-col" : "") + "'>" + headHtml + stripHtml +
+        "<div class='wk-day-body " + cls + "' style='height:" + bodyHeight + "px'>" + baseHtml + cardHtml + nowLineHtml + "</div></div>");
     });
 
-    $weekGrid.innerHTML = "<div class='wk-grid'>" + html.join("") + "</div>";
+    // 全幅の現在時刻ライン(今日を含む週のみ。日カラム部分を覆う。今日の列側の●は上のループでwk-day-body内に描画済み)
+    var nowLineFullHtml = hasToday
+      ? "<div class='wk-now-line' id='wk-now-line' style='top:" + weekMinToPx(nowMinutesOfDay(), range.startMin) + "px'></div>"
+      : "";
+
+    $weekGrid.innerHTML = "<div class='wk-grid'>" + html.join("") + nowLineFullHtml + "</div>";
     $weekTasksNote.hidden = !!data.tasksAvailable;
+
+    if (weekChanged) {
+      $weekContainer.scrollTop = weekInitialScrollTop(state.weekStart);
+      scrollTodayIntoView();
+    }
+
+    if (hasToday) startNowLineTimer(); else stopNowLineTimer();
   }
 
   function tasksAvailableForRender(data) {
     return !!data.tasksAvailable;
+  }
+
+  // イベント色(hex)→wk-base/wk-cardに当てるinline styleの断片。色が無ければ何も返さない(従来スタイルのまま)
+  function weekColorStyle(color, kind) {
+    if (!color) return "";
+    if (kind === "base") {
+      return "background:" + hexToRgba(color, 0.25) + ";border-left:4px solid " + color + ";";
+    }
+    return "background:" + hexToRgba(color, 0.12) + ";border:1px solid " + color + ";border-left:4px solid " + color + ";";
+  }
+
+  // #RRGGBB → "rgba(r,g,b,alpha)"。不正な値ならnull
+  function hexToRgba(hex, alpha) {
+    var m = /^#([0-9a-fA-F]{6})$/.exec(hex || "");
+    if (!m) return null;
+    var n = parseInt(m[1], 16);
+    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + alpha + ")";
+  }
+
+  /* ===== 週ビュー: 現在時刻ライン ===== */
+
+  function nowMinutesOfDay() {
+    var now = new Date();
+    return now.getHours() * 60 + now.getMinutes();
+  }
+
+  function startNowLineTimer() {
+    stopNowLineTimer();
+    weekNowLineTimer = setInterval(updateNowLinePosition, WEEK_NOW_LINE_INTERVAL_MS);
+  }
+
+  function stopNowLineTimer() {
+    if (weekNowLineTimer) { clearInterval(weekNowLineTimer); weekNowLineTimer = null; }
+  }
+
+  function updateNowLinePosition() {
+    var line = document.getElementById("wk-now-line");
+    var dot = document.getElementById("wk-now-dot");
+    if (!line && !dot) { stopNowLineTimer(); return; }
+    var top = weekMinToPx(nowMinutesOfDay(), 0) + "px";
+    if (line) line.style.top = top;
+    if (dot) dot.style.top = top;
+  }
+
+  /* ===== 週ビュー: タップで詳細ポップオーバー(読み取り専用) ===== */
+
+  // クリックで詳細ポップを開くための情報をdata-*属性としてHTML断片で返す
+  function weekDetailDataAttrs(kind, info) {
+    var attrs = ["data-wk-kind='" + kind + "'", "data-wk-title='" + escapeAttr(info.title) + "'"];
+    if (kind === "task") {
+      attrs.push("data-wk-date='" + escapeAttr(info.date) + "'");
+      attrs.push("data-wk-listname='" + escapeAttr(info.listName || "") + "'");
+    } else {
+      attrs.push("data-wk-date='" + escapeAttr(info.date) + "'");
+      attrs.push("data-wk-allday='" + (info.allDay ? "1" : "0") + "'");
+      attrs.push("data-wk-start='" + escapeAttr(info.startLabel || "") + "'");
+      attrs.push("data-wk-end='" + escapeAttr(info.endLabel || "") + "'");
+      attrs.push("data-wk-calendar='" + escapeAttr(info.calendarName || "") + "'");
+      attrs.push("data-wk-recurring='" + (info.recurring ? "1" : "0") + "'");
+    }
+    return attrs.join(" ");
+  }
+
+  function openWeekDetailPopover(el) {
+    var d = el.dataset;
+    var html;
+    if (d.wkKind === "task") {
+      html = "<h4>" + escapeHtml(d.wkTitle) + "</h4>" +
+        "<div class='pop-row'>期限: " + formatDateJp(d.wkDate) + "</div>" +
+        (d.wkListname ? "<div class='pop-row'>リスト: " + escapeHtml(d.wkListname) + "</div>" : "") +
+        "<div class='pop-buttons'><button type='button' id='wk-detail-close'>閉じる</button></div>";
+    } else {
+      var whenLabel = d.wkAllday === "1" ? "終日" : d.wkStart + "〜" + d.wkEnd;
+      html = "<h4>" + escapeHtml(d.wkTitle) + "</h4>" +
+        "<div class='pop-row'>" + formatDateJp(d.wkDate) + " " + whenLabel + "</div>" +
+        (d.wkCalendar ? "<div class='pop-row'>カレンダー: " + escapeHtml(d.wkCalendar) + "</div>" : "") +
+        "<div class='pop-row'>繰り返し: " + (d.wkRecurring === "1" ? "あり" : "なし") + "</div>" +
+        "<div class='pop-buttons'><button type='button' id='wk-detail-close'>閉じる</button></div>";
+    }
+    openPopover(el, html);
+    document.getElementById("wk-detail-close").addEventListener("click", closePopover);
+  }
+
+  /* ===== 週ビュー: イベント束ね(スワイプ週送り・タップ詳細・スクロール時のポップオーバー閉じ) ===== */
+
+  function bindWeekEvents() {
+    $weekGrid.addEventListener("click", function (ev) {
+      var el = ev.target.closest(".wk-base, .wk-card, .wk-badge-allday, .wk-badge-task");
+      if (!el) return;
+      openWeekDetailPopover(el);
+    });
+
+    // 週ビューのスクロールでポップオーバーの位置が狂うため閉じる(月グリッドと同じ型)
+    $weekContainer.addEventListener("scroll", closePopover);
+
+    // スワイプで週送り。横移動がWEEK_SWIPE_MIN_PX以上、かつ縦移動より大きい場合のみ反応させ、
+    // 縦スクロールや列のはみ出し分の横スクロールと誤発火しないようにする
+    $weekContainer.addEventListener("touchstart", function (ev) {
+      weekTouchStart = ev.touches.length === 1 ? { x: ev.touches[0].clientX, y: ev.touches[0].clientY } : null;
+    }, { passive: true });
+
+    $weekContainer.addEventListener("touchend", function (ev) {
+      if (!weekTouchStart || !ev.changedTouches.length) { weekTouchStart = null; return; }
+      var dx = ev.changedTouches[0].clientX - weekTouchStart.x;
+      var dy = ev.changedTouches[0].clientY - weekTouchStart.y;
+      weekTouchStart = null;
+      if (Math.abs(dx) < WEEK_SWIPE_MIN_PX || Math.abs(dx) <= Math.abs(dy)) return;
+      if (state.view !== "week") return;
+      navWeek(dx < 0 ? +1 : -1); // 右→左(dx<0)=次週、左→右(dx>0)=前週
+    });
   }
 
   /* ===== 保存(デバウンス+直列化) ===== */
@@ -1547,6 +1730,7 @@
     document.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape") {
         if (closePopover()) return;
+        if (closeMoreMenu()) return;
         if (closeSubMenus()) return;
         closeModal();
         return;
@@ -1564,6 +1748,7 @@
     document.addEventListener("mousedown", function (ev) {
       if (!$popover.hidden && !$popover.contains(ev.target)) closePopover();
       if (!ev.target.closest(".pal-group")) closeSubMenus();
+      if (!ev.target.closest(".tb-more-wrap")) closeMoreMenu();
     });
     $modalOverlay.addEventListener("mousedown", function (ev) {
       if (ev.target === $modalOverlay) closeModal();
