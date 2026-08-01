@@ -117,6 +117,11 @@ main {
 .pal-sub-item:hover { background: #eef3f8; }
 .pal-sub-item.is-selected { font-weight: bold; background: #fff3c4; }
 
+/* ビュー切替(月/週) */
+.tb-view-switch { display: inline-flex; gap: 2px; }
+.tb-view-btn { min-width: 28px; }
+.tb-view-btn.is-active { background: #ffd54d; border-color: #d8a800; font-weight: bold; }
+
 .tb-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
 #save-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
@@ -229,6 +234,88 @@ td.is-today { border-right-color: #e8c76a; }
   border-style: solid;
   border-width: 0 5px 5px 0;
   border-color: transparent #c33 transparent transparent;
+}
+
+/* ===== 週ビュー(読み取り専用) ===== */
+
+#week-view { margin-top: 8px; }
+#week-header { display: flex; justify-content: flex-end; margin-bottom: 4px; }
+#week-container { position: relative; overflow: auto; max-height: calc(100vh - 60px - 120px); background: #fff; border: 1px solid #b5bcc4; }
+#week-loading {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.75);
+  font-weight: bold; z-index: 20;
+}
+
+.wk-grid { display: flex; min-width: 760px; }
+
+/* 左端の時間軸 */
+.wk-time-axis { width: 46px; min-width: 46px; flex: none; position: sticky; left: 0; z-index: 6; background: #edf0f4; border-right: 1px solid #9aa2ac; }
+.wk-time-axis-head { height: 56px; border-bottom: 2px solid #9aa2ac; }
+.wk-time-axis-body { position: relative; }
+.wk-hour-label { position: absolute; left: 2px; transform: translateY(-50%); font-size: 10px; color: #445; white-space: nowrap; }
+
+/* 日列 */
+.wk-day-col { flex: 1 1 0; min-width: 100px; border-right: 1px solid #cdd3da; }
+.wk-day-head {
+  height: 56px; padding: 4px; box-sizing: border-box;
+  border-bottom: 2px solid #9aa2ac; background: #edf0f4;
+  font-size: 11px; text-align: center;
+}
+.wk-day-head.is-today { box-shadow: inset 0 0 0 2px #e8a000; }
+.wk-day-d { display: block; font-weight: bold; }
+.wk-day-holiday-name { display: block; font-size: 9px; color: #a05; }
+
+.wk-day-strip { min-height: 18px; padding: 2px 3px; border-bottom: 1px solid #e2e6ea; background: #fafbfc; }
+.wk-badge-allday, .wk-badge-task {
+  display: block; font-size: 10px; line-height: 1.5; padding: 0 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wk-badge-allday { color: #764d00; }
+.wk-badge-task { color: #445; }
+
+.wk-day-body { position: relative; }
+
+/* ベース層(繰り返し予定): 全幅・薄いグレーブルーの帯 */
+.wk-base {
+  position: absolute;
+  background: #dde3ea;
+  border: 1px solid #c3ccd6;
+  border-radius: 3px;
+  font-size: 10px;
+  color: #445;
+  padding: 1px 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+/* 前面カード(単発予定): 白背景+濃い枠+影でベースの上に重ねる */
+.wk-card {
+  position: absolute;
+  background: #fff;
+  border: 1px solid #2f4a6b;
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.25);
+  font-size: 10px;
+  color: #1c2733;
+  padding: 1px 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  z-index: 3;
+  box-sizing: border-box;
+}
+.wk-ev-time { font-size: 9px; color: #667; }
+
+/* 曜日・祝日・有休の背景色(月グリッドと統一) */
+.wk-day-head.day-sat, .wk-day-body.day-sat { background: #dbe7f5; }
+.wk-day-head.day-sun, .wk-day-body.day-sun,
+.wk-day-head.day-holiday, .wk-day-body.day-holiday { background: #f5dbdb; }
+.wk-day-head.day-paidleave, .wk-day-body.day-paidleave { background: #faf3d1; }
+
+@media (max-width: 700px) {
+  #week-container { max-height: calc(100vh - 220px); }
 }
 
 /* ===== 集計パネル ===== */

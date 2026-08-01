@@ -166,8 +166,66 @@
       });
       saveDb(db);
       return { ok: true, count: (entries || []).length };
+    },
+
+    listWeekData: function (from, to) {
+      var dates = weekRangeDates(from, to);
+      var holidays = {};
+      Object.keys(HOLIDAYS_2026).forEach(function (d) {
+        if (d >= from && d < to) holidays[d] = HOLIDAYS_2026[d];
+      });
+      // 実在の祝日が範囲に入らない週でも「祝日1件を含む」検証ができるようサンプルを1件混ぜる
+      if (dates[3] && !holidays[dates[3]]) holidays[dates[3]] = "サンプル祝日";
+      return {
+        events: sampleWeekEvents(dates),
+        tasks: sampleWeekTasks(dates),
+        tasksAvailable: true,
+        holidays: holidays
+      };
     }
   };
+
+  // from(含む)〜to(含まない)の日付文字列配列
+  function weekRangeDates(from, to) {
+    var out = [];
+    var d = from;
+    while (d < to) { out.push(d); d = ymd(new Date(parseDateStr(d).getTime() + 86400000)); }
+    return out;
+  }
+
+  function parseDateStr(s) {
+    var p = s.split("-");
+    return new Date(+p[0], +p[1] - 1, +p[2]);
+  }
+
+  // 繰り返し予定の帯(平日に並ぶ)+単発予定(重なりを含む)+終日予定のサンプル
+  function sampleWeekEvents(dates) {
+    var events = [];
+    dates.forEach(function (dateStr, i) {
+      if (i <= 4) { // 月〜金相当: 繰り返しの勤務予定を帯として並べる
+        events.push(mkWeekEvent("UB定例", dateStr, "09:00", "18:00", true, "メイン"));
+      }
+    });
+    if (dates[0]) events.push(mkWeekEvent("来客対応", dates[0], "14:00", "15:00", false, "メイン")); // ベースと重なる前面カード
+    if (dates[1]) {
+      events.push(mkWeekEvent("打合せA", dates[1], "10:00", "11:00", false, "メイン"));
+      events.push(mkWeekEvent("打合せB", dates[1], "10:30", "11:30", false, "サブ")); // 前面カード同士の重なり
+    }
+    if (dates[2]) events.push({ title: "健康診断", start: "", end: "", allDay: true, date: dates[2], calendarName: "メイン", recurring: false });
+    return events;
+  }
+
+  function mkWeekEvent(title, date, from, to, recurring, calName) {
+    return { title: title, start: date + " " + from, end: date + " " + to, allDay: false, date: "", calendarName: calName, recurring: recurring };
+  }
+
+  function sampleWeekTasks(dates) {
+    var tasks = [];
+    if (dates[0]) tasks.push({ title: "資料提出", due: dates[0], listName: "仕事" });
+    if (dates[2]) tasks.push({ title: "経費精算", due: dates[2], listName: "仕事" });
+    if (dates[4]) tasks.push({ title: "本の返却", due: dates[4], listName: "個人" });
+    return tasks;
+  }
 
   // 検証ケースを網羅するサンプルイベントを表示月から動的生成(本番はGoogleカレンダーから取得)。
   // タイトルは実カレンダーの傾向に合わせている(完全一致ルールと部分一致ルールの両方を検証するため)

@@ -55,7 +55,8 @@ function doPost(e) {
       saveMonthDays: saveMonthDays,
       saveCategories: saveCategories,
       listCalendarEvents: listCalendarEvents,
-      saveImportMap: saveImportMap
+      saveImportMap: saveImportMap,
+      listWeekData: listWeekData
     };
     var fn = String(req.fn || '');
     if (!API[fn]) throw new Error('不明なAPI: ' + fn);
@@ -378,17 +379,9 @@ function rowComparator_(a, b) {
 
 /* ===== カレンダー取込API(フェーズ3) ===== */
 
-// その月のカレンダーイベント一覧+タイトル→区分の記憶(importMap)を返す。ym = 'yyyy-MM'
-function listCalendarEvents(ym) {
-  ym = String(ym || '');
-  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
-  ensureSetup_();
-  ensureImportMapDefaults_();  // 既存シートに初期ルールが無い場合の補填(冪等)
-  var year = parseInt(ym.substring(0, 4), 10);
-  var month = parseInt(ym.substring(5, 7), 10);
-  var from = new Date(year, month - 1, 1);
-  var to = new Date(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1);
-
+// 取込対象カレンダー(デフォルトカレンダー+設定calendarIds、祝日カレンダーは除外)の一覧を返す。
+// listCalendarEvents / listWeekData の共通ヘルパー
+function collectCalendars_() {
   var calendars = [];
   var defCal = CalendarApp.getDefaultCalendar();
   if (defCal) calendars.push(defCal);
@@ -401,6 +394,21 @@ function listCalendarEvents(ym) {
         if (cal) calendars.push(cal);
       } catch (e) { /* 取得失敗のIDはスキップ(落とさない) */ }
     });
+  return calendars;
+}
+
+// その月のカレンダーイベント一覧+タイトル→区分の記憶(importMap)を返す。ym = 'yyyy-MM'
+function listCalendarEvents(ym) {
+  ym = String(ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) throw new Error('不正な年月指定: ' + ym);
+  ensureSetup_();
+  ensureImportMapDefaults_();  // 既存シートに初期ルールが無い場合の補填(冪等)
+  var year = parseInt(ym.substring(0, 4), 10);
+  var month = parseInt(ym.substring(5, 7), 10);
+  var from = new Date(year, month - 1, 1);
+  var to = new Date(month === 12 ? year + 1 : year, month === 12 ? 0 : month, 1);
+
+  var calendars = collectCalendars_();
 
   var events = [];
   calendars.forEach(function (cal) {
@@ -468,6 +476,120 @@ function saveImportMap(entries) {
   var rows = order.map(function (t) { return map[t]; });
   writeAllRows_(sh, rows, 3, data.length - 1);
   return { ok: true, count: entries.length };
+}
+
+/* ===== 週ビューAPI(フェーズ4) ===== */
+
+// 週表示用データ一括取得。from含む・to含まない('yyyy-MM-dd')。範囲は1〜14日。
+function listWeekData(from, to) {
+  from = String(from || '');
+  to = String(to || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    throw new Error('不正な日付指定: ' + from + ' 〜 ' + to);
+  }
+  var fromDate = parseYmd_(from);
+  var toDate = parseYmd_(to);
+  var days = Math.round((toDate.getTime() - fromDate.getTime()) / 86400000);
+  if (days < 1 || days > 14) throw new Error('不正な範囲です(1〜14日): ' + from + ' 〜 ' + to);
+
+  ensureSetup_();
+  ensureHolidaysForYear_(fromDate.getFullYear());
+  ensureHolidaysForYear_(toDate.getFullYear());
+
+  return {
+    events: collectWeekEvents_(fromDate, toDate),
+    tasks: collectWeekTasks_(from, to),
+    tasksAvailable: tasksAvailable_(),
+    holidays: readHolidaysForRange_(from, to)
+  };
+}
+
+function collectWeekEvents_(fromDate, toDate) {
+  var calendars = collectCalendars_();
+  var events = [];
+  calendars.forEach(function (cal) {
+    var calName = cal.getName();
+    cal.getEvents(fromDate, toDate).forEach(function (ev) {
+      if (ev.isAllDayEvent()) {
+        events.push({
+          title: ev.getTitle(),
+          start: '', end: '',
+          allDay: true,
+          date: Utilities.formatDate(ev.getAllDayStartDate(), TZ, 'yyyy-MM-dd'),
+          calendarName: calName,
+          recurring: ev.isRecurringEvent()
+        });
+      } else {
+        events.push({
+          title: ev.getTitle(),
+          start: Utilities.formatDate(ev.getStartTime(), TZ, 'yyyy-MM-dd HH:mm'),
+          end: Utilities.formatDate(ev.getEndTime(), TZ, 'yyyy-MM-dd HH:mm'),
+          allDay: false,
+          date: '',
+          calendarName: calName,
+          recurring: ev.isRecurringEvent()
+        });
+      }
+    });
+  });
+  events.sort(function (a, b) {
+    var ka = a.allDay ? a.date + ' 00:00' : a.start;
+    var kb = b.allDay ? b.date + ' 00:00' : b.start;
+    return ka === kb ? 0 : (ka < kb ? -1 : 1);
+  });
+  return events;
+}
+
+// Tasks高度なサービスが有効かどうか(未有効でも例外にしない)
+function tasksAvailable_() {
+  try {
+    return typeof Tasks !== 'undefined' && !!Tasks.Tasklists;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 期限が[from, to)内の未完了タスクを {title, due, listName} で返す。未有効時は空配列。
+function collectWeekTasks_(from, to) {
+  if (!tasksAvailable_()) return [];
+  var out = [];
+  try {
+    var dueMin = from + 'T00:00:00Z';
+    var dueMax = to + 'T00:00:00Z';
+    var taskLists = Tasks.Tasklists.list().items || [];
+    taskLists.forEach(function (tl) {
+      var items = Tasks.Tasks.list(tl.id, {
+        showCompleted: false,
+        dueMin: dueMin,
+        dueMax: dueMax
+      }).items || [];
+      items.forEach(function (t) {
+        if (!t.due || t.status === 'completed') return;
+        var due = Utilities.formatDate(new Date(t.due), TZ, 'yyyy-MM-dd');
+        if (due < from || due >= to) return; // API側のdueMin/dueMaxの念のための二重チェック
+        out.push({ title: String(t.title || ''), due: due, listName: String(tl.title || '') });
+      });
+    });
+  } catch (e) {
+    console.error('タスク取得失敗: ' + e);
+    return [];
+  }
+  return out;
+}
+
+function readHolidaysForRange_(from, to) {
+  var data = sheet_(SHEETS.HOLIDAYS).getDataRange().getValues();
+  var out = {};
+  for (var i = 1; i < data.length; i++) {
+    var d = fmtDate_(data[i][0]);
+    if (d >= from && d < to) out[d] = String(data[i][1] || '祝日');
+  }
+  return out;
+}
+
+function parseYmd_(s) {
+  var p = s.split('-');
+  return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10));
 }
 
 /* ===== 祝日(Googleの日本の祝日カレンダーから年単位で取得・キャッシュ) ===== */
