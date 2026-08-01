@@ -235,14 +235,20 @@
 
   function openSettingsModal() {
     var cur = apiSettings || { url: "", token: "" };
+    // 保存済み設定が無ければ、同一オリジン配信(Worker/wrangler dev)を前提にURLを自動プリセットする(手入力不要にする)
+    var presetUrl = cur.url;
+    if (!presetUrl && /^https?:$/.test(location.protocol)) {
+      presetUrl = location.origin + "/api";
+    }
     $modal.innerHTML =
       "<h3>API設定" + (hasApiAccess() ? "" : "(初回セットアップ)") + "</h3>" +
-      "<div class='modal-note'>README の手順で GAS をデプロイし、WebアプリURLと、" +
-      "スプレッドシート「設定」シートの apiToken の値を貼り付けてください。" +
+      "<div class='modal-note'>構築手順書(docs/構築手順書.md)§1でデプロイしたWorkerのURLに /api を付けたもの" +
+      "(例: https://myschedule.xxxx.workers.dev/api)と、" +
+      "<code>wrangler secret put API_TOKEN</code> で設定したトークンを入力してください。" +
       "設定はこのブラウザにのみ保存されます。</div>" +
-      "<div class='set-row'><label>GAS WebアプリURL</label>" +
-      "<input type='text' id='set-url' placeholder='https://script.google.com/macros/s/…/exec' value='" + escapeAttr(cur.url) + "'></div>" +
-      "<div class='set-row'><label>APIトークン(設定シートの apiToken)</label>" +
+      "<div class='set-row'><label>Worker API URL</label>" +
+      "<input type='text' id='set-url' placeholder='https://….workers.dev/api' value='" + escapeAttr(presetUrl) + "'></div>" +
+      "<div class='set-row'><label>APIトークン(wrangler secret put API_TOKEN で設定した値)</label>" +
       "<input type='text' id='set-token' value='" + escapeAttr(cur.token) + "'></div>" +
       "<div class='modal-buttons'>" +
       "<button type='button' id='set-cancel'>閉じる</button>" +
@@ -257,7 +263,10 @@
       apiSettings = { url: url, token: token };
       localStorage.setItem(API_SETTINGS_KEY, JSON.stringify(apiSettings));
       closeModal();
-      loadMonth(state.ym);
+      // 接続先が変わった可能性があるため週キャッシュを破棄し、現在のビューに応じて読み込み直す
+      weekCache.clear();
+      if (state.view === "week") loadWeek(state.weekStart);
+      else loadMonth(state.ym);
     });
   }
 
@@ -315,6 +324,8 @@
         if (!window.confirm("保存に失敗した変更があります。月を切り替えると失われますが、移動しますか?")) return;
         dirtyRecords = false; dirtyDays = false; setSaveStatus("saved");
       }
+      // loadWeekの世代ガード(weekStart===state.weekStart)と同じ型にするため、要求前にstate.ymを更新しておく
+      state.ym = ym;
       loadMonth(ym);
     });
   }
@@ -324,6 +335,8 @@
     $gridLoading.hidden = false;
     serverCall("getMonthData", ym)
       .then(function (data) {
+        // 応答が届くまでの間に別の月へ切り替わっていたら、この古い応答は破棄する
+        if (ym !== state.ym) return;
         state.ym = data.ym;
         state.config = data.config || state.config;
         state.categories = data.categories || [];
@@ -912,6 +925,10 @@
     }
     list.sort(function (a, b) { return a.order - b.order; });
 
+    // 区分保存は即時保存(モーダル操作のため)だが、月データの保存ステータス表示を乗っ取らないよう
+    // 保存前の状態(エラー中/dirty)を控えておき、区分保存の成否に関わらず成功後にそれを復元する
+    var wasError = $saveStatus.classList.contains("is-error");
+    var wasDirty = dirtyRecords || dirtyDays;
     setSaveStatus("saving");
     serverCall("saveCategories", list)
       .then(function () {
@@ -920,7 +937,9 @@
         ensureToolValid();
         closeModal();
         renderAll();
-        setSaveStatus("saved");
+        if (wasError) setSaveStatus("error");
+        else if (wasDirty) setSaveStatus("dirty");
+        else setSaveStatus("saved");
         showToast("区分を保存しました", false);
       })
       .catch(function (err) {
@@ -1288,7 +1307,10 @@
         weekCache.set(weekStart, data);
         if (weekStart === state.weekStart) renderWeekView(data);
       })
-      .catch(function (err) { handleServerError(err, "週データの読み込みに失敗しました"); })
+      .catch(function (err) {
+        handleServerError(err, "週データの読み込みに失敗しました");
+        $weekGrid.innerHTML = "<div class='wk-error'>週データを読み込めませんでした。「⟳ 再読込」で再試行してください。</div>";
+      })
       .finally(function () { $weekLoading.hidden = true; });
   }
 
@@ -1458,7 +1480,7 @@
 
   function flushSave() {
     if (saving) { savePending = true; return Promise.resolve(); }
-    if (!dirtyRecords && !dirtyDays) return Promise.resolve();
+    if (!dirtyRecords && !dirtyDays) { setSaveStatus("saved"); return Promise.resolve(); }
     saving = true;
     setSaveStatus("saving");
     var ym = state.ym;

@@ -250,6 +250,8 @@ td.is-today { border-right-color: #e8c76a; }
 
 .wk-grid { display: flex; min-width: 760px; }
 
+.wk-error { padding: 24px 12px; text-align: center; color: #667; }
+
 /* 左端の時間軸 */
 .wk-time-axis { width: 46px; min-width: 46px; flex: none; position: sticky; left: 0; z-index: 6; background: #edf0f4; border-right: 1px solid #9aa2ac; }
 .wk-time-axis-head { height: 56px; border-bottom: 2px solid #9aa2ac; }

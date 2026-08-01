@@ -14,9 +14,9 @@
     // cache: no-store — 編集直後の再読み込みで古いファイルを掴まないため
     var opt = { cache: "no-store" };
     var results = await Promise.all([
-      fetch("../index.html", opt).then(function (r) { return r.text(); }),
-      fetch("../style.css", opt).then(function (r) { return r.text(); }),
-      fetch("../app.js", opt).then(function (r) { return r.text(); }),
+      fetch("../web/index.html", opt).then(function (r) { return r.text(); }),
+      fetch("../web/style.css", opt).then(function (r) { return r.text(); }),
+      fetch("../web/app.js", opt).then(function (r) { return r.text(); }),
       fetch("mock.js", opt).then(function (r) { return r.text(); })
     ]);
     var html = results[0], css = results[1], app = results[2], mock = results[3];

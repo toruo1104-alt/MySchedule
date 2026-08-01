@@ -1,0 +1,11 @@
+{
+  "records": [],
+  "daysInfo": [],
+  "categories": [],
+  "config": [
+    { "key": "dayStart", "value": "Sat Dec 30 1899 06:00:00 GMT+0900", "note": "Sheetsが時刻化して文字化けした想定値" },
+    { "key": "dayEnd", "value": "22:00", "note": "こちらは正しいHH:mm" }
+  ],
+  "importMap": [],
+  "holidays": []
+}

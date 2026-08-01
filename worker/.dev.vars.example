@@ -1,0 +1,11 @@
+# ローカル開発用の環境変数サンプル。実際の値は .dev.vars にコピーして設定する
+# (.dev.vars は .gitignore 済み。ダミー値のままコミットしないこと)
+
+# フロントが送るtoken(POST {token,fn,args})と照合する値
+API_TOKEN=dummy-local-token
+
+# GASプロキシ(祝日取得・カレンダー連携・週データ)のWebアプリURL
+GAS_URL=https://example.invalid/dummy-gas-proxy
+
+# GASプロキシ呼び出し時のtoken
+GAS_TOKEN=dummy-gas-token

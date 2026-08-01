@@ -3,3 +3,13 @@ old/
 
 # Claude Code の個人設定
 .claude/settings.local.json
+
+# Cloudflare Worker(フェーズ5: D1移行)
+worker/node_modules/
+worker/.wrangler/
+.dev.vars
+scripts/out/
+
+# 実データを含む移行成果物(どの階層に置いても無視。worker/migrations/*.sql は対象外)
+myschedule-export*.json
+backup*.sql
