@@ -7,6 +7,9 @@
   <title>MySchedule</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#2f4a6b">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
 </head>
 <body>
   <div id="app">
@@ -81,5 +84,11 @@
   <div id="toast" hidden></div>
 
   <script src="app.js"></script>
+  <script>
+    // PWA(ホーム画面インストール): https/localhostのみ登録し、失敗しても致命的でないため握りつぶす
+    if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+      navigator.serviceWorker.register("sw.js").catch(function () { /* 未登録でもアプリ動作には影響しない */ });
+    }
+  </script>
 </body>
 </html>
