@@ -39,6 +39,7 @@
           <div id="more-menu" class="tb-more-menu" hidden>
             <button type="button" id="btn-categories">区分編集</button>
             <button type="button" id="btn-import" title="Googleカレンダーの予定を取り込む">取込</button>
+            <button type="button" id="btn-week-reload" title="週ビューのキャッシュを破棄して再取得">⟳ 週データ再読込</button>
             <button type="button" id="btn-settings" title="API設定">⚙ 設定</button>
           </div>
         </div>
@@ -60,9 +61,6 @@
 
       <!-- ===== 週ビュー(読み取り専用) ===== -->
       <div id="week-view" hidden>
-        <div id="week-header">
-          <button type="button" id="btn-week-reload" title="キャッシュを破棄して再取得">⟳ 再読込</button>
-        </div>
         <div id="week-container">
           <div id="week-loading" hidden>読み込み中…</div>
           <div id="week-grid"></div>

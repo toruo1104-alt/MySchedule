@@ -28,10 +28,15 @@
   var API_SETTINGS_KEY = "myschedule-api";    // localStorage キー
   var PALETTE_KEY = "myschedule-palette";     // パレット折りたたみ状態
   var VIEW_KEY = "myschedule-view";           // 表示中ビュー(月/週)の永続化キー
-  var WEEK_PX_PER_HOUR = 48;                  // 週ビュー: 1時間あたりの高さ(px)
+  var WEEK_ZOOM_KEY = "myschedule-week-zoom"; // 週ビュー: ピンチズーム後の倍率(px/h・列幅)の永続化キー
+  var WEEK_PX_PER_HOUR = 48;                  // 週ビュー: 1時間あたりの高さ(px)。既定値。ピンチズームで実行時に変わりうる(localStorageで復元)
   var WEEK_NOW_HOUR_OFFSET = 2;               // 週ビュー: 初期スクロール = 現在時刻-2h(常に今日を含む範囲で構築するため)
   var WEEK_NOW_LINE_INTERVAL_MS = 60000;      // 週ビュー: 現在時刻ラインの更新間隔(1分)
-  var WEEK_DAY_COL_WIDTH = 120;               // 週ビュー(連続日送り): 1日列の幅(px)。style.css .wk-day-col の width と合わせる
+  var WEEK_DAY_COL_WIDTH = 120;               // 週ビュー(連続日送り): 1日列の幅(px)。既定値。ピンチズームで実行時に変わりうる(localStorageで復元)
+  var WEEK_MIN_PX_PER_HOUR = 20;              // 週ビュー: ピンチズーム(縦)の下限
+  var WEEK_MAX_PX_PER_HOUR = 120;             // 週ビュー: ピンチズーム(縦)の上限
+  var WEEK_MIN_COL_WIDTH = 70;                // 週ビュー: ピンチズーム(横)の下限
+  var WEEK_MAX_COL_WIDTH = 260;               // 週ビュー: ピンチズーム(横)の上限
   var WEEK_CHUNK_DAYS = 7;                    // 週ビュー: データ取得・描画拡張の単位(日数)
   var WEEK_INITIAL_PAST_DAYS = 7;             // 週ビュー: 初期描画範囲の開始(今日の何日前から)
   var WEEK_INITIAL_FUTURE_DAYS = 14;          // 週ビュー: 初期描画範囲の終端(今日の何日後まで。半開区間の終端)
@@ -40,8 +45,11 @@
   var WEEK_MAX_INFLIGHT = 2;                  // 週ビュー: チャンク取得の同時実行数上限
   var WEEK_LABEL_DEBOUNCE_MS = 150;           // 週ビュー: スクロール後のラベル更新デバウンス
   var WEEK_NARROW_MAX_WIDTH = 700;            // 週ビュー: これ未満の画面幅でカード重ねを全幅オフセット表示に切替
-  var WEEK_BODY_HEIGHT = 24 * WEEK_PX_PER_HOUR; // 週ビュー: 日列の高さ(px)。時間軸00:00〜24:00固定
+  var WEEK_HEAD_HEIGHT = 32;                  // 週ビュー: 曜日ヘッダーの高さ(px)。style.css .wk-day-head/.wk-time-axis-head の height と一致させる
+  var WEEK_STRIP_HEIGHT = 26;                 // 週ビュー: 終日/タスク帯の固定高さ(px)。style.css .wk-day-strip/.wk-time-axis-strip の height と一致させる
   var WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+  function weekBodyHeight() { return 24 * WEEK_PX_PER_HOUR; } // 週ビュー: 日列の高さ(px)。時間軸00:00〜24:00固定(ズームで可変のため関数化)
 
   /* ===== 状態 ===== */
   var state = {
@@ -68,6 +76,7 @@
   var monthLoaded = false;                    // 月データを一度でも読み込み済みか(週→月切替時の再読込要否判定)
   var weekNowLineTimer = null;                // 現在時刻ラインの更新用setInterval ID(週ビューを離れたらclear)
   var weekLabelDebounceTimer = null;          // ラベル更新のデバウンスタイマー
+  var weekPinch = null;                       // 週ビュー: 2本指ピンチ中の状態(開始距離・開始倍率・中点座標など。null=非ピンチ中)
 
   /* 保存管理 */
   var saveTimer = null;
@@ -132,8 +141,9 @@
     });
     document.getElementById("btn-view-month").addEventListener("click", function () { switchView("month"); });
     document.getElementById("btn-view-week").addEventListener("click", function () { switchView("week"); });
-    document.getElementById("btn-week-reload").addEventListener("click", reloadVisibleWeekChunks);
+    document.getElementById("btn-week-reload").addEventListener("click", function () { closeMoreMenu(); reloadVisibleWeekChunks(); });
     initPaletteState();
+    initWeekZoomState();
     initViewState();
     $saveStatus.addEventListener("click", function () {
       if ($saveStatus.classList.contains("is-error")) flushSaveNow();
@@ -1343,7 +1353,31 @@
     buildWeekGridSkeleton();
   }
 
-  function buildWeekGridSkeleton() {
+  /* ===== 週ビュー: ピンチズーム倍率の永続化(localStorage) ===== */
+
+  function initWeekZoomState() {
+    try {
+      var raw = localStorage.getItem(WEEK_ZOOM_KEY);
+      if (!raw) return;
+      var saved = JSON.parse(raw);
+      if (saved && typeof saved.pxPerHour === "number") {
+        WEEK_PX_PER_HOUR = clamp(saved.pxPerHour, WEEK_MIN_PX_PER_HOUR, WEEK_MAX_PX_PER_HOUR);
+      }
+      if (saved && typeof saved.colWidth === "number") {
+        WEEK_DAY_COL_WIDTH = clamp(saved.colWidth, WEEK_MIN_COL_WIDTH, WEEK_MAX_COL_WIDTH);
+      }
+    } catch (e) { /* 保存値が壊れている場合は既定値のまま無視 */ }
+  }
+
+  function saveWeekZoomState() {
+    try {
+      localStorage.setItem(WEEK_ZOOM_KEY, JSON.stringify({ pxPerHour: WEEK_PX_PER_HOUR, colWidth: WEEK_DAY_COL_WIDTH }));
+    } catch (e) { /* 保存できなくても致命的ではない(次回起動時は既定値) */ }
+  }
+
+  // 現在のrangeStart/rangeEnd・weekCacheを保ったままDOM(骨格+日列)を組み直す。
+  // データ再取得はensureChunksForRange経由(既にreadyなチャンクは即返る=実質no-op)
+  function renderWeekGridDom() {
     var hourLabels = [];
     for (var m = 0; m < 24 * 60; m += 60) {
       hourLabels.push("<div class='wk-hour-label' style='top:" + weekMinToPx(m) + "px'>" +
@@ -1351,8 +1385,11 @@
     }
     $weekGrid.innerHTML = "<div class='wk-grid'>" +
       "<div class='wk-time-axis'><div class='wk-time-axis-head'></div>" +
-      "<div class='wk-time-axis-body' style='height:" + WEEK_BODY_HEIGHT + "px'>" + hourLabels.join("") + "</div></div>" +
+      "<div class='wk-time-axis-strip'></div>" +
+      "<div class='wk-time-axis-body' style='height:" + weekBodyHeight() + "px'>" + hourLabels.join("") + "</div></div>" +
       "<div class='wk-now-line' id='wk-now-line' hidden></div>" +
+      "<div class='wk-snap-marker wk-snap-start' id='wk-snap-6'></div>" +
+      "<div class='wk-snap-marker wk-snap-end' id='wk-snap-22'></div>" +
       "</div>";
     var gridEl = $weekGrid.querySelector(".wk-grid");
     var nowLineEl = document.getElementById("wk-now-line");
@@ -1366,6 +1403,11 @@
 
     ensureChunksForRange(state.rangeStart, state.rangeEnd);
     refreshNowLineState();
+    updateSnapMarkers();
+  }
+
+  function buildWeekGridSkeleton() {
+    renderWeekGridDom();
     $weekContainer.scrollTop = weekInitialScrollTop();
     scrollToDate(state.todayStr, false);
     updateWeekLabel();
@@ -1570,6 +1612,7 @@
     var el = document.createElement("div");
     el.className = "wk-day-col" + (dateStr === state.todayStr ? " is-today-col" : "");
     el.dataset.date = dateStr;
+    el.style.width = WEEK_DAY_COL_WIDTH + "px"; // ピンチズームで可変(既定値はstyle.cssと一致)
     el.innerHTML = buildDayColumnInner(dateStr);
     return el;
   }
@@ -1585,7 +1628,7 @@
       return "<div class='wk-day-head " + clsLoading + "'>" +
         "<span class='wk-day-d'>" + fmtMD(dateStr) + "(" + WEEKDAYS[d.dow] + ")</span></div>" +
         "<div class='wk-day-strip'></div>" +
-        "<div class='wk-day-body " + clsLoading + "' style='height:" + WEEK_BODY_HEIGHT + "px'></div>";
+        "<div class='wk-day-body " + clsLoading + "' style='height:" + weekBodyHeight() + "px'></div>";
     }
 
     if (entry.status === "error") {
@@ -1593,7 +1636,7 @@
       return "<div class='wk-day-head " + clsErr + "'>" +
         "<span class='wk-day-d'>" + fmtMD(dateStr) + "(" + WEEKDAYS[d.dow] + ")</span></div>" +
         "<div class='wk-day-strip'></div>" +
-        "<div class='wk-day-body " + clsErr + "' style='height:" + WEEK_BODY_HEIGHT + "px'>" +
+        "<div class='wk-day-body " + clsErr + "' style='height:" + weekBodyHeight() + "px'>" +
         "<div class='wk-day-error'>読み込み失敗<br><button type='button' class='wk-day-retry' data-chunk='" + chunkKey + "'>再試行</button></div>" +
         "</div>";
     }
@@ -1659,10 +1702,10 @@
         "<span class='wk-ev-time'>" + ev.startLabel + "</span> " + escapeHtml(ev.title) + "</div>";
     }).join("");
 
-    var nowDotHtml = isToday ? "<div class='wk-now-dot' id='wk-now-dot' style='top:" + weekMinToPx(nowMinutesOfDay()) + "px'></div>" : "";
+    var nowDotHtml = isToday ? "<div class='wk-now-dot' id='wk-now-dot' style='top:" + weekNowLineTops().dotTop + "px'></div>" : "";
 
     return headHtml + stripHtml +
-      "<div class='wk-day-body " + cls + "' style='height:" + WEEK_BODY_HEIGHT + "px'>" + baseHtml + cardHtml + nowDotHtml + "</div>";
+      "<div class='wk-day-body " + cls + "' style='height:" + weekBodyHeight() + "px'>" + baseHtml + cardHtml + nowDotHtml + "</div>";
   }
 
   // イベント色(hex)→wk-base/wk-cardに当てるinline styleの断片。色が無ければ何も返さない(従来スタイルのまま)
@@ -1772,13 +1815,27 @@
     return now.getHours() * 60 + now.getMinutes();
   }
 
+  // 分(0-1440)→ .wk-grid座標(全幅ライン用)のtop。ヘッダー(WEEK_HEAD_HEIGHT)+終日/タスク帯(WEEK_STRIP_HEIGHT)ぶんを
+  // 加算する。各日列のwk-day-bodyはこのオフセット分だけ下から始まるため、これが無いと線が実時刻より上にズレる
+  function weekLineTopPx(min) {
+    return WEEK_HEAD_HEIGHT + WEEK_STRIP_HEIGHT + weekMinToPx(min);
+  }
+
+  // 現在時刻ライン(.wk-grid座標)・現在時刻ドット(.wk-day-body座標)のtopを同一のnowMinutesOfDay()から算出する
+  // 共通関数。refreshNowLineState・updateNowLinePosition・buildDayColumnInner(初期描画)すべてがこれを使い、
+  // ライン・ドット・実時刻の3者を完全同期させる
+  function weekNowLineTops() {
+    var min = nowMinutesOfDay();
+    return { lineTop: weekLineTopPx(min), dotTop: weekMinToPx(min) };
+  }
+
   // 今日が現在の描画範囲内にあるかで全幅ラインの表示・タイマーを切り替える
   function refreshNowLineState() {
     var hasToday = state.todayStr >= state.rangeStart && state.todayStr < state.rangeEnd;
     var line = document.getElementById("wk-now-line");
     if (line) {
       line.hidden = !hasToday;
-      if (hasToday) line.style.top = weekMinToPx(nowMinutesOfDay()) + "px";
+      if (hasToday) line.style.top = weekNowLineTops().lineTop + "px";
     }
     if (hasToday) startNowLineTimer(); else stopNowLineTimer();
   }
@@ -1796,9 +1853,109 @@
     var line = document.getElementById("wk-now-line");
     var dot = document.getElementById("wk-now-dot");
     if (!line && !dot) { stopNowLineTimer(); return; }
-    var top = weekMinToPx(nowMinutesOfDay()) + "px";
-    if (line) line.style.top = top;
-    if (dot) dot.style.top = top;
+    var tops = weekNowLineTops();
+    if (line) line.style.top = tops.lineTop + "px";
+    if (dot) dot.style.top = tops.dotTop + "px";
+  }
+
+  /* ===== 週ビュー: 6:00/22:00スナップマーカー・ピンチズーム ===== */
+
+  // 6:00/22:00の一旦停止用スナップマーカー(.wk-snap-marker)のtopを現在の倍率で再計算する。
+  // buildWeekGridSkeleton後・ズーム後の再描画後に呼ぶ(骨格を作り直すたびにマーカーもDOMごと作り直されるため)
+  function updateSnapMarkers() {
+    var start = document.getElementById("wk-snap-6");
+    var end = document.getElementById("wk-snap-22");
+    if (start) start.style.top = weekLineTopPx(6 * 60) + "px";
+    if (end) end.style.top = weekLineTopPx(22 * 60) + "px";
+  }
+
+  // 週コンテナ上の2本指ジェスチャ: 縦間隔の方が大きければ縦ズーム(時間高さ)、横間隔の方が大きければ横ズーム(列幅)。
+  // 操作中はCSS transformで.wk-gridを軽量プレビューし、指を離した時点で実際の値を確定して再描画する
+  function bindWeekZoomGestures() {
+    $weekContainer.addEventListener("touchstart", function (ev) {
+      if (ev.touches.length !== 2) return;
+      var gridEl = $weekGrid.querySelector(".wk-grid");
+      if (!gridEl) return;
+      var t0 = ev.touches[0], t1 = ev.touches[1];
+      var distX = Math.abs(t1.clientX - t0.clientX);
+      var distY = Math.abs(t1.clientY - t0.clientY);
+      var midX = (t0.clientX + t1.clientX) / 2;
+      var midY = (t0.clientY + t1.clientY) / 2;
+      var rect = gridEl.getBoundingClientRect();
+      weekPinch = {
+        mode: distY > distX ? "v" : "h",
+        startDistX: distX, startDistY: distY,
+        startPxPerHour: WEEK_PX_PER_HOUR, startColWidth: WEEK_DAY_COL_WIDTH,
+        anchorClientX: midX, anchorClientY: midY,
+        startScrollLeft: $weekContainer.scrollLeft, startScrollTop: $weekContainer.scrollTop,
+        previewScale: 1
+      };
+      gridEl.style.transformOrigin = (midX - rect.left) + "px " + (midY - rect.top) + "px";
+    }, { passive: true });
+
+    $weekContainer.addEventListener("touchmove", function (ev) {
+      if (!weekPinch || ev.touches.length !== 2) return;
+      ev.preventDefault(); // ブラウザ標準のページピンチズームを抑止(1本指スクロールには影響しない)
+      var gridEl = $weekGrid.querySelector(".wk-grid");
+      if (!gridEl) return;
+      var t0 = ev.touches[0], t1 = ev.touches[1];
+      var distX = Math.abs(t1.clientX - t0.clientX);
+      var distY = Math.abs(t1.clientY - t0.clientY);
+      var scale;
+      if (weekPinch.mode === "v") {
+        scale = clamp((distY || 1) / (weekPinch.startDistY || 1),
+          WEEK_MIN_PX_PER_HOUR / weekPinch.startPxPerHour, WEEK_MAX_PX_PER_HOUR / weekPinch.startPxPerHour);
+        gridEl.style.transform = "scaleY(" + scale + ")";
+      } else {
+        scale = clamp((distX || 1) / (weekPinch.startDistX || 1),
+          WEEK_MIN_COL_WIDTH / weekPinch.startColWidth, WEEK_MAX_COL_WIDTH / weekPinch.startColWidth);
+        gridEl.style.transform = "scaleX(" + scale + ")";
+      }
+      weekPinch.previewScale = scale;
+    }, { passive: false });
+
+    $weekContainer.addEventListener("touchend", finishWeekPinch);
+    $weekContainer.addEventListener("touchcancel", finishWeekPinch);
+  }
+
+  function finishWeekPinch() {
+    if (!weekPinch) return;
+    var anchor = weekPinch;
+    weekPinch = null;
+    var gridEl = $weekGrid.querySelector(".wk-grid");
+    if (gridEl) { gridEl.style.transform = ""; gridEl.style.transformOrigin = ""; }
+    if (anchor.previewScale === 1) return; // 実質動いていない(タップに近い操作)なら再描画しない
+
+    if (anchor.mode === "v") {
+      WEEK_PX_PER_HOUR = clamp(Math.round(anchor.startPxPerHour * anchor.previewScale), WEEK_MIN_PX_PER_HOUR, WEEK_MAX_PX_PER_HOUR);
+    } else {
+      WEEK_DAY_COL_WIDTH = clamp(Math.round(anchor.startColWidth * anchor.previewScale), WEEK_MIN_COL_WIDTH, WEEK_MAX_COL_WIDTH);
+    }
+    saveWeekZoomState();
+    rerenderWeekGridForZoom(anchor);
+  }
+
+  // ピンチ中点付近の「日・時刻」が画面上の同じ位置に留まるよう、新しい倍率でscrollLeft/scrollTopを補正しつつ再描画する
+  function rerenderWeekGridForZoom(anchor) {
+    var axisWidth = 46;
+    var containerRect = $weekContainer.getBoundingClientRect();
+    var oldLocalX = anchor.startScrollLeft + (anchor.anchorClientX - containerRect.left);
+    var oldLocalY = anchor.startScrollTop + (anchor.anchorClientY - containerRect.top);
+
+    var newLocalX = oldLocalX;
+    var newLocalY = oldLocalY;
+    if (anchor.mode === "h" && anchor.startColWidth > 0) {
+      var ratioX = WEEK_DAY_COL_WIDTH / anchor.startColWidth;
+      newLocalX = oldLocalX <= axisWidth ? oldLocalX : axisWidth + (oldLocalX - axisWidth) * ratioX;
+    } else if (anchor.mode === "v" && anchor.startPxPerHour > 0) {
+      var oldMinutes = (oldLocalY - WEEK_HEAD_HEIGHT - WEEK_STRIP_HEIGHT) / (anchor.startPxPerHour / 60);
+      newLocalY = WEEK_HEAD_HEIGHT + WEEK_STRIP_HEIGHT + oldMinutes * (WEEK_PX_PER_HOUR / 60);
+    }
+
+    renderWeekGridDom();
+
+    $weekContainer.scrollLeft = Math.max(0, newLocalX - (anchor.anchorClientX - containerRect.left));
+    $weekContainer.scrollTop = Math.max(0, newLocalY - (anchor.anchorClientY - containerRect.top));
   }
 
   /* ===== 週ビュー: タップで詳細ポップオーバー(読み取り専用) ===== */
@@ -1859,6 +2016,8 @@
       if (weekLabelDebounceTimer) clearTimeout(weekLabelDebounceTimer);
       weekLabelDebounceTimer = setTimeout(updateWeekLabel, WEEK_LABEL_DEBOUNCE_MS);
     });
+
+    bindWeekZoomGestures();
   }
 
   /* ===== 保存(デバウンス+直列化) ===== */
