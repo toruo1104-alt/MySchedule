@@ -29,6 +29,9 @@
   var PALETTE_KEY = "myschedule-palette";     // パレット折りたたみ状態
   var VIEW_KEY = "myschedule-view";           // 表示中ビュー(月/週)の永続化キー
   var WEEK_ZOOM_KEY = "myschedule-week-zoom"; // 週ビュー: ピンチズーム後の倍率(px/h・列幅)の永続化キー
+  var WEEK_NIGHT_END_MIN = 360;               // 週ビュー: 深夜帯の終端(6:00=360分)。折りたたみ時はこれ未満を帯に圧縮
+  var WEEK_NIGHT_BAND_PX = 18;                 // 週ビュー: 深夜帯折りたたみ時の帯の高さ(px)。ズーム倍率に依らず固定
+  var WEEK_NIGHT_KEY = "myschedule-week-night"; // 週ビュー: 深夜帯折りたたみ状態の永続化キー
   var WEEK_PX_PER_HOUR = 48;                  // 週ビュー: 1時間あたりの高さ(px)。既定値。ピンチズームで実行時に変わりうる(localStorageで復元)
   var WEEK_NOW_HOUR_OFFSET = 2;               // 週ビュー: 初期スクロール = 現在時刻-2h(常に今日を含む範囲で構築するため)
   var WEEK_NOW_LINE_INTERVAL_MS = 60000;      // 週ビュー: 現在時刻ラインの更新間隔(1分)
@@ -45,11 +48,16 @@
   var WEEK_MAX_INFLIGHT = 2;                  // 週ビュー: チャンク取得の同時実行数上限
   var WEEK_LABEL_DEBOUNCE_MS = 150;           // 週ビュー: スクロール後のラベル更新デバウンス
   var WEEK_NARROW_MAX_WIDTH = 700;            // 週ビュー: これ未満の画面幅でカード重ねを全幅オフセット表示に切替
+  var WEEK_COMPACT_COL_WIDTH = 90;            // 週ビュー: 列幅がこれ未満のときイベントテキストを1行省略表示(俯瞰モード)
   var WEEK_HEAD_HEIGHT = 32;                  // 週ビュー: 曜日ヘッダーの高さ(px)。style.css .wk-day-head/.wk-time-axis-head の height と一致させる
   var WEEK_STRIP_HEIGHT = 26;                 // 週ビュー: 終日/タスク帯の固定高さ(px)。style.css .wk-day-strip/.wk-time-axis-strip の height と一致させる
   var WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
-  function weekBodyHeight() { return 24 * WEEK_PX_PER_HOUR; } // 週ビュー: 日列の高さ(px)。時間軸00:00〜24:00固定(ズームで可変のため関数化)
+  // 週ビュー: 日列の高さ(px)。時間軸00:00〜24:00固定(ズームで可変のため関数化)。
+  // 深夜帯(0-6時)折りたたみ時は帯の高さ+残り18時間ぶんになる
+  function weekBodyHeight() {
+    return weekNightCollapsed ? WEEK_NIGHT_BAND_PX + 18 * WEEK_PX_PER_HOUR : 24 * WEEK_PX_PER_HOUR;
+  }
 
   /* ===== 状態 ===== */
   var state = {
@@ -75,6 +83,7 @@
   var weekChunkOrigin = "";                   // チャンク境界の起点(起動時の「今日の7日前」で固定)
   var monthLoaded = false;                    // 月データを一度でも読み込み済みか(週→月切替時の再読込要否判定)
   var weekNowLineTimer = null;                // 現在時刻ラインの更新用setInterval ID(週ビューを離れたらclear)
+  var weekNightCollapsed = true;              // 週ビュー: 深夜帯(0-6時)を帯に折りたたむか(既定=折りたたむ)
   var weekLabelDebounceTimer = null;          // ラベル更新のデバウンスタイマー
   var weekPinch = null;                       // 週ビュー: 2本指ピンチ中の状態(開始距離・開始倍率・中点座標など。null=非ピンチ中)
   var weekStickyEls = null;                   // syncWeekDayHeaderStickyが毎回対象にする.wk-day-head/.wk-day-stripのキャッシュ(nullなら再構築)。
@@ -147,6 +156,7 @@
     document.getElementById("btn-week-reload").addEventListener("click", function () { closeMoreMenu(); reloadVisibleWeekChunks(); });
     initPaletteState();
     initWeekZoomState();
+    initWeekNightState();
     initViewState();
     $saveStatus.addEventListener("click", function () {
       if ($saveStatus.classList.contains("is-error")) flushSaveNow();
@@ -1390,15 +1400,39 @@
     } catch (e) { /* 保存できなくても致命的ではない(次回起動時は既定値) */ }
   }
 
+  /* ===== 週ビュー: 深夜帯折りたたみ状態の永続化(localStorage) ===== */
+
+  // 保存値が "0" のときのみ展開状態として復元する(既定=折りたたみ=true)
+  function initWeekNightState() {
+    try {
+      var raw = localStorage.getItem(WEEK_NIGHT_KEY);
+      if (raw === "0") weekNightCollapsed = false;
+    } catch (e) { /* 保存値が壊れている場合は既定値のまま無視 */ }
+  }
+
+  function saveWeekNightState() {
+    try {
+      localStorage.setItem(WEEK_NIGHT_KEY, weekNightCollapsed ? "1" : "0");
+    } catch (e) { /* 保存できなくても致命的ではない(次回起動時は既定値) */ }
+  }
+
   // 現在のrangeStart/rangeEnd・weekCacheを保ったままDOM(骨格+日列)を組み直す。
   // データ再取得はensureChunksForRange経由(既にreadyなチャンクは即返る=実質no-op)
   function renderWeekGridDom() {
+    $weekGrid.classList.toggle("wk-compact", WEEK_DAY_COL_WIDTH < WEEK_COMPACT_COL_WIDTH); // 俯瞰モード: 列幅が閾値未満ならタイトルを1行省略表示に切替(CSSのみで実現)
     weekStickyEls = null; // 骨格ごと作り直すため、疑似stickyの対象要素キャッシュを無効化
     var hourLabels = [];
     for (var m = 0; m < 24 * 60; m += 60) {
+      if (weekNightCollapsed && m < WEEK_NIGHT_END_MIN) continue; // 折りたたみ時は0〜5時のラベルを出さない(帯+トグルに置き換え)
       hourLabels.push("<div class='wk-hour-label' style='top:" + weekMinToPx(m) + "px'>" +
         pad2(Math.floor(m / 60)) + ":00</div>");
     }
+    // 深夜帯(0-6時)折りたたみのトグル。collapsed時は帯そのものの位置、展開時は6:00ラベル直上に「0–6 ▴」として常設する
+    var nightToggleTop = weekNightCollapsed ? 0 : (weekMinToPx(WEEK_NIGHT_END_MIN) - 18);
+    var nightToggleHeight = weekNightCollapsed ? WEEK_NIGHT_BAND_PX : 18;
+    var nightToggleLabel = weekNightCollapsed ? "0–6 ▸" : "0–6 ▴";
+    var nightToggleHtml = "<button type='button' class='wk-night-toggle' style='top:" + nightToggleTop +
+      "px;height:" + nightToggleHeight + "px'>" + nightToggleLabel + "</button>";
     // 2ペイン構造: #week-container(縦スクロール専用)直下の.wk-hwrapを左(時間軸・通常フロー)/
     // 右(.wk-days-scroller・横スクロール専用)に分ける(sticky時間軸の入れ子2Dスクロール破綻を避けるため)
     // スナップマーカーは.wk-days-scroller(入れ子スクロールコンテナ)の外に置くこと。
@@ -1409,7 +1443,7 @@
       "<div class='wk-snap-marker wk-snap-end' id='wk-snap-22'></div>" +
       "<div class='wk-time-axis'><div class='wk-time-axis-head'></div>" +
       "<div class='wk-time-axis-strip'></div>" +
-      "<div class='wk-time-axis-body' style='height:" + weekBodyHeight() + "px'>" + hourLabels.join("") + "</div></div>" +
+      "<div class='wk-time-axis-body' style='height:" + weekBodyHeight() + "px'>" + hourLabels.join("") + nightToggleHtml + "</div></div>" +
       "<div class='wk-days-scroller' id='wk-days-scroller'><div class='wk-grid'>" +
       "<div class='wk-now-line' id='wk-now-line' hidden></div>" +
       "</div></div>" +
@@ -1444,7 +1478,7 @@
   function weekInitialScrollTop() {
     var now = new Date();
     var hour = clamp(now.getHours() - WEEK_NOW_HOUR_OFFSET, 0, 24);
-    return hour * WEEK_PX_PER_HOUR;
+    return weekMinToPx(hour * 60);
   }
 
   // 指定日の列が画面内に来るよう横スクロール(見える範囲の中央寄せ)。
@@ -1461,8 +1495,26 @@
     }
   }
 
-  function weekMinToPx(min) {
-    return min * (WEEK_PX_PER_HOUR / 60);
+  // 分(0-1440)→px。深夜帯折りたたみ時は0〜6時を帯高さ(WEEK_NIGHT_BAND_PX)に線形圧縮し、6時以降は通常倍率にする
+  // (区分線形)。pxPerHourは省略時WEEK_PX_PER_HOUR(ピンチズーム中のプレビュー計算などで異なる倍率を渡すために引数化)
+  function weekMinToPx(min, pxPerHour) {
+    pxPerHour = pxPerHour || WEEK_PX_PER_HOUR;
+    if (weekNightCollapsed) {
+      if (min <= WEEK_NIGHT_END_MIN) return (min / WEEK_NIGHT_END_MIN) * WEEK_NIGHT_BAND_PX;
+      return WEEK_NIGHT_BAND_PX + (min - WEEK_NIGHT_END_MIN) * (pxPerHour / 60);
+    }
+    return min * (pxPerHour / 60);
+  }
+
+  // weekMinToPxの逆変換(px→分)。rerenderWeekGridForZoomの縦アンカー補正でのみ使う
+  function weekPxToMin(px, pxPerHour) {
+    pxPerHour = pxPerHour || WEEK_PX_PER_HOUR;
+    px = Math.max(0, px);
+    if (weekNightCollapsed) {
+      if (px <= WEEK_NIGHT_BAND_PX) return (px / WEEK_NIGHT_BAND_PX) * WEEK_NIGHT_END_MIN;
+      return WEEK_NIGHT_END_MIN + (px - WEEK_NIGHT_BAND_PX) / (pxPerHour / 60);
+    }
+    return px / (pxPerHour / 60);
   }
 
   // ベース層(繰り返し予定)の日ごとの重なり判定。重なる後発イベントは幅70%右寄せ+前面
@@ -1667,7 +1719,9 @@
 
   function buildDayColumnEl(dateStr) {
     var el = document.createElement("div");
-    el.className = "wk-day-col" + (dateStr === state.todayStr ? " is-today-col" : "");
+    var isWeekStart = parseDateStr(dateStr).getDay() === 1; // 月曜=週の区切り
+    el.className = "wk-day-col" + (dateStr === state.todayStr ? " is-today-col" : "") +
+      (isWeekStart ? " wk-week-start" : "");
     el.dataset.date = dateStr;
     el.style.width = WEEK_DAY_COL_WIDTH + "px"; // ピンチズームで可変(既定値はstyle.cssと一致)
     el.innerHTML = buildDayColumnInner(dateStr);
@@ -1722,8 +1776,12 @@
       }).join("") : "") +
       "</div>";
 
+    // 深夜帯(0-6時)折りたたみ時、帯内で完結するイベント(endMin<=WEEK_NIGHT_END_MIN)は描画せずカウントのみ行う
+    // (跨ぎイベントはoverlap計算のため対象外にせず、そのまま描画=weekMinToPxの圧縮で「上が切れる」表現になる)
+    var nightOmitCount = 0;
     var baseHtml = layoutBaseEvents(info.base).map(function (l) {
       var ev = l.ev;
+      if (weekNightCollapsed && ev.endMin <= WEEK_NIGHT_END_MIN) { nightOmitCount++; return ""; }
       var top = weekMinToPx(ev.startMin);
       var height = Math.max(weekMinToPx(ev.endMin) - top, 10);
       var style = "top:" + top + "px;height:" + height + "px;" +
@@ -1738,6 +1796,7 @@
     var cardLayout = isNarrowWeekView() ? layoutCardEventsStacked(info.card) : layoutCardEvents(info.card);
     var cardHtml = cardLayout.map(function (l) {
       var ev = l.ev;
+      if (weekNightCollapsed && ev.endMin <= WEEK_NIGHT_END_MIN) { nightOmitCount++; return ""; }
       var top = weekMinToPx(ev.startMin);
       var height = Math.max(weekMinToPx(ev.endMin) - top, 10);
       var style;
@@ -1759,10 +1818,14 @@
         "<span class='wk-ev-time'>" + ev.startLabel + "</span> " + escapeHtml(ev.title) + "</div>";
     }).join("");
 
+    var nightBandHtml = weekNightCollapsed ?
+      "<div class='wk-night-band' role='button' tabindex='0' style='height:" + WEEK_NIGHT_BAND_PX + "px'>" +
+      (nightOmitCount > 0 ? "+" + nightOmitCount : "") + "</div>" : "";
+
     var nowDotHtml = isToday ? "<div class='wk-now-dot' id='wk-now-dot' style='top:" + weekNowLineTops().dotTop + "px'></div>" : "";
 
     return headHtml + stripHtml +
-      "<div class='wk-day-body " + cls + "' style='height:" + weekBodyHeight() + "px'>" + baseHtml + cardHtml + nowDotHtml + "</div>";
+      "<div class='wk-day-body " + cls + "' style='height:" + weekBodyHeight() + "px'>" + nightBandHtml + baseHtml + cardHtml + nowDotHtml + "</div>";
   }
 
   // イベント色(hex)→wk-base/wk-cardに当てるinline styleの断片。色が無ければ何も返さない(従来スタイルのまま)
@@ -2052,8 +2115,8 @@
       var ratioX = WEEK_DAY_COL_WIDTH / anchor.startColWidth;
       newLocalX = oldLocalX * ratioX;
     } else if (anchor.mode === "v" && anchor.startPxPerHour > 0) {
-      var oldMinutes = (oldLocalY - WEEK_HEAD_HEIGHT - WEEK_STRIP_HEIGHT) / (anchor.startPxPerHour / 60);
-      newLocalY = WEEK_HEAD_HEIGHT + WEEK_STRIP_HEIGHT + oldMinutes * (WEEK_PX_PER_HOUR / 60);
+      var oldMinutes = weekPxToMin(oldLocalY - WEEK_HEAD_HEIGHT - WEEK_STRIP_HEIGHT, anchor.startPxPerHour);
+      newLocalY = WEEK_HEAD_HEIGHT + WEEK_STRIP_HEIGHT + weekMinToPx(oldMinutes);
     }
 
     renderWeekGridDom(); // $weekDaysScrollerを新しいDOMで再取得し直す(骨格ごと作り直されるため)
@@ -2152,6 +2215,8 @@
 
   function bindWeekEvents() {
     $weekGrid.addEventListener("click", function (ev) {
+      var nightToggle = ev.target.closest(".wk-night-toggle, .wk-night-band");
+      if (nightToggle) { toggleWeekNight(); return; }
       var retryBtn = ev.target.closest(".wk-day-retry");
       if (retryBtn) { retryChunk(retryBtn.dataset.chunk); return; }
       var el = ev.target.closest(".wk-base, .wk-card, .wk-badge-allday, .wk-badge-task");
@@ -2159,11 +2224,34 @@
       openWeekDetailPopover(el);
     });
 
+    // .wk-night-band(role=button付きdiv)はネイティブのEnter発火が無いため、buttonの.wk-night-toggleと
+    // 同条件でEnter/Spaceのkeydownをclickに読み替える
+    $weekGrid.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      var nightBand = ev.target.closest(".wk-night-band");
+      if (!nightBand) return;
+      ev.preventDefault();
+      toggleWeekNight();
+    });
+
     // 縦スクロールで: ポップオーバーを閉じる(位置が狂うため。月グリッドと同じ型)/ ラベル更新(150msデバウンス)。
     // 横スクロール分は.wk-days-scrollerの再生成のたびにonWeekHorizontalScrollを再バインドする(renderWeekGridDom)
     $weekContainer.addEventListener("scroll", onWeekVerticalScroll, { passive: true }); // preventDefault不要なのでpassiveを明示
 
     bindWeekZoomGestures();
+  }
+
+  // 深夜帯(0-6時)折りたたみのトグル。scrollLeft/scrollTopの指す時刻をなるべく維持したまま
+  // renderWeekGridDomで骨格ごと作り直す(collapsed/展開で高さが変わるため)
+  function toggleWeekNight() {
+    var oldMin = weekPxToMin(Math.max(0, $weekContainer.scrollTop - WEEK_HEAD_HEIGHT - WEEK_STRIP_HEIGHT));
+    var oldScrollLeft = $weekDaysScroller ? $weekDaysScroller.scrollLeft : 0;
+    weekNightCollapsed = !weekNightCollapsed;
+    saveWeekNightState();
+    renderWeekGridDom();
+    $weekDaysScroller.scrollLeft = oldScrollLeft;
+    $weekContainer.scrollTop = Math.max(0, WEEK_HEAD_HEIGHT + WEEK_STRIP_HEIGHT + weekMinToPx(oldMin));
+    syncWeekDayHeaderSticky();
   }
 
   /* ===== 保存(デバウンス+直列化) ===== */

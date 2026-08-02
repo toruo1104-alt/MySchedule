@@ -332,7 +332,6 @@ td.is-today { border-right-color: #e8c76a; }
   border-bottom: 2px solid #9aa2ac; background: #edf0f4;
   font-size: 11px; text-align: center;
 }
-.wk-day-head.is-today { box-shadow: inset 0 0 0 2px #e8a000; }
 .wk-day-d { font-weight: bold; }
 
 /* 固定高(WEEK_STRIP_HEIGHT=26pxとJS側で一致させる)。全列で高さを揃え、現在時刻ラインのズレを防ぐ。
@@ -388,7 +387,27 @@ td.is-today { border-right-color: #e8c76a; }
   box-sizing: border-box;
   cursor: pointer;
 }
+
+/* 俯瞰モード(列幅が狭いとき): タイトルを複数行折り返しではなく1行+ellipsisにして色帯として読めるようにする */
+#week-grid.wk-compact .wk-base, #week-grid.wk-compact .wk-card {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+}
 .wk-ev-time { font-size: 9px; color: #667; }
+
+/* 深夜帯(0-6時)折りたたみ: ほぼ予定が入らない深夜帯を細い帯にして俯瞰時の解像度を上げるためのトグル・帯表示 */
+.wk-night-toggle {
+  position: absolute; left: 0; right: 0; z-index: 6;
+  font-size: 9px; color: #667; background: #e9ecf0; border: none; cursor: pointer;
+  padding: 0; margin: 0; font-family: inherit;
+}
+.wk-night-band {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 4;
+  background: #e9ecf0; border-bottom: 1px solid #cdd3da;
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 3px; font-size: 9px; color: #667; cursor: pointer;
+}
 
 /* 現在時刻ライン(今日を含む週のみ描画。.wk-days-scroller内の全幅なので時間軸ぶんのオフセットは不要。
    sticky見出しより低いz-indexにして、スクロールで見出しの下に隠れるようにする) */
@@ -406,6 +425,21 @@ td.is-today { border-right-color: #e8c76a; }
 .wk-day-head.day-sun, .wk-day-body.day-sun,
 .wk-day-head.day-holiday, .wk-day-body.day-holiday { background: #f5dbdb; }
 .wk-day-head.day-paidleave, .wk-day-body.day-paidleave { background: #faf3d1; }
+
+/* 週境界(月曜)の左縦線: head/strip/bodyを通して1本に見える灰色線。列幅を変えないためborderではなくinset box-shadow */
+.wk-week-start > .wk-day-head,
+.wk-week-start > .wk-day-strip,
+.wk-week-start > .wk-day-body {
+  box-shadow: inset 2px 0 0 #8a94a0;
+}
+
+/* 今日ヘッダー: 塗りつぶし。day-sat/day-sun/day-holiday/day-paidleaveより後ろに置き、同じ詳細度(0,2,0)でも
+   ソース順で背景色を確実に上書きする(!important不使用) */
+.wk-day-head.is-today { background: #e8a000; color: #fff; }
+
+/* 今日列本体: 左右オレンジ縦線。wk-week-startの灰色線より後ろに置き、同じ詳細度でも
+   ソース順で月曜と重なった場合にオレンジ線を優先する */
+.wk-day-body.is-today { box-shadow: inset 2px 0 0 #e8a000, inset -2px 0 0 #e8a000; }
 
 @media (max-width: 700px) {
   #week-container { height: calc(100vh - 110px); height: calc(100svh - 110px); }

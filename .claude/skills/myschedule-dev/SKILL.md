@@ -70,3 +70,6 @@ Cloudflare Workers(Static Assetsでフロント配信+/api) + D1(SQLite、デー
 - **入れ子スクロールと `scroll-snap`**: `scroll-snap-align`/`scroll-snap-stop` を持つスナップ領域も
   最近接スクロールコンテナに捕捉される。週ビューのスナップマーカー(`.wk-snap-marker`)は必ず
   `.wk-days-scroller` の外(`.wk-hwrap` 直下)に置くこと(内側に置くと縦スナップが黙って無効化される。実際に起きた)
+- **週ビューの縦座標は必ず `weekMinToPx`/`weekPxToMin` を経由すること** → 深夜帯折りたたみ(フェーズ4f)で
+  0〜6時が帯高さに線形圧縮される区分線形座標系になっているため、px/分の直書き換算は折りたたみ時にズレる
+  (現在時刻ライン・スナップマーカー・ピンチズームのアンカー補正なども含め、座標が絡む処理は全てこの2関数を通す)

@@ -21,7 +21,7 @@ Excel「時間記録.xlsx」の置き換え。30分グリッドに区分(UB派�
 
 ## 状況(2026-08-02時点)
 
-- フェーズ1〜3(月グリッド・集計・Googleカレンダー取込)+フェーズ4a〜4e(週ビュー・モバイル実用化・連続日送り・PWA対応・安定化)実装済み
+- フェーズ1〜3(月グリッド・集計・Googleカレンダー取込)+フェーズ4a〜4f(週ビュー・モバイル実用化・連続日送り・PWA対応・安定化・俯瞰改善)実装済み
 - **フェーズ5カットオーバー完了(2026-08-02)**: 旧構成(GitHub Pages+GAS JSON API+スプレッドシート)を退役し、Cloudflare Workers+D1へ完全移行。**現行本番 = https://myschedule.toruo1104.workers.dev**。反映は `cd worker && npx wrangler deploy`。カレンダー/Tasks連携はプロキシ専用GASプロジェクト経由(設計=`docs/DB設計.md`、手順=`docs/構築手順書.md`)
 - 旧スプレッドシートはアーカイブ(読み取り専用で温存)。旧GASプロジェクト(スプレッドシート版API)は退役(GitHub Pagesの無効化・旧GASのアーカイブはユーザー操作。復旧が必要な場合は`old/`とgit履歴から可能)
 - 運用面: 第2領域の固定枠はGoogleカレンダー登録済み・運用開始(メモリ `schedule-task-management` 参照)
