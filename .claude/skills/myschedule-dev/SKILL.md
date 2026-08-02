@@ -57,3 +57,9 @@ GitHub Pages(フロント) + GAS JSON API + スプレッドシート(データ)�
 - **祝日が出ない** → 本番: 祝日シートの該当年の行を削除して再アクセス(再取得される)。
   モック: mock.js の HOLIDAYS_2026 は2026年分のみハードコード
 - **時間帯外の記録**: dayStart前/dayEnd後のスロットは表示されないが集計には含まれる(仕様)
+- **入れ子スクロールと `position: sticky`**: `overflow: auto`/`hidden` の内側スクロールコンテナ配下の要素の
+  sticky は、外側コンテナのスクロールには追従しない(sticky は最近接スクロールコンテナ基準)。
+  週ビューの曜日ヘッダーはこのため JS 疑似 sticky(`translateY` 同期。`syncWeekDayHeaderSticky`)を使っている
+- **入れ子スクロールと `scroll-snap`**: `scroll-snap-align`/`scroll-snap-stop` を持つスナップ領域も
+  最近接スクロールコンテナに捕捉される。週ビューのスナップマーカー(`.wk-snap-marker`)は必ず
+  `.wk-days-scroller` の外(`.wk-hwrap` 直下)に置くこと(内側に置くと縦スナップが黙って無効化される。実際に起きた)
