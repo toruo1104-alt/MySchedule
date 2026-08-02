@@ -1,9 +1,10 @@
 # MySchedule プロジェクト
 
-個人用スケジュール管理Webアプリ。フロント=**GitHub Pages**、データ=**スプレッドシート**(GAS JSON API+apiToken)。
+個人用スケジュール管理Webアプリ。フロント・API=**Cloudflare Workers**(Static Assets + D1)、Googleカレンダー・Tasksの読み取りは**専用GASプロキシ**経由。
 Excel「時間記録.xlsx」の置き換え。30分グリッドに区分(UB派遣先/CN自社/BT/FS/ST勉強/FXフレックス等)を塗り、月間集計する。
 
 - **仕様の正**: `docs/仕様書.md`(データ構造の禁止事項・通信/認証・UX統一ルールを変更前に必ず読む)
+- **バックエンド設計・構築手順**: `docs/DB設計.md` / `docs/構築手順書.md`
 - **進め方・落とし穴**: `.claude/skills/myschedule-dev/SKILL.md`
 - **導入・反映手順**: `README.md`
 
@@ -11,22 +12,20 @@ Excel「時間記録.xlsx」の置き換え。30分グリッドに区分(UB派�
 
 | ファイル | 内容 | 反映方法 |
 |---|---|---|
-| `index.html` / `style.css` / `app.js` | フロント | `git push` → Pages自動反映(https://toruo1104-alt.github.io/MySchedule/) |
-| `GAS.txt` | APIサーバー | GAS `コード.gs` へ貼り替え+**新バージョンデプロイ** |
-| `appsscript_json.txt` | マニフェスト | GAS `appsscript.json`(変更時のみ) |
+| `web/` | フロント(index.html/style.css/app.js) | `git push` → `cd worker && npx wrangler deploy` |
+| `worker/` | API(src/index.js、src/actions/*、migrations/*.sql) | 同上(スキーマ変更は`npx wrangler d1 migrations apply DB --remote`も) |
+| `gas/calendar_proxy.gs` | Googleカレンダー・Tasksのステートレスな窓口 | プロキシ専用GASプロジェクトへ貼り替え+**新バージョンデプロイ** |
 | `preview/` | ローカルプレビュー(mock) | 反映不要(http://localhost:8766/preview/index.html) |
 
 リポジトリ: https://github.com/toruo1104-alt/MySchedule (Public — コードのみ。トークン・URL・データは絶対に含めない)
 
-## 状況(2026-08-01時点)
+## 状況(2026-08-02時点)
 
-- フェーズ1(月グリッド)+フェーズ2(集計)+フェーズ3(Googleカレンダー取込)実装・公開済み(Pages+API構成)。UI改善(日次UB合計・なぞって消す・Undo・パレット折りたたみ・行高)済み
-- フェーズ4a: 週ビュー(月/週トグル。繰り返し予定=背景帯・単発=前面カード・Google Tasks表示、`listWeekData` API)実装済み(2026-08-01)
-- フェーズ4b/4c: 週ビューのモバイル実用化+連続日送り+PWA対応を実装・本番デプロイ済み(2026-08-01。カレンダー色表示はGASプロキシの貼り替えが必要)
-- **フェーズ5(Cloudflare D1+Workers移行・ハイブリッド構成): 本番稼働中**(2026-08-01。敵対的レビュー2本+E2Eリハーサル+実データ移行(58日/805スロット)済み)。**現行本番 = https://myschedule.toruo1104.workers.dev (phase5-dbブランチ)**。反映は `npx wrangler deploy`。カレンダー/Tasks連携はプロキシ専用GASプロジェクト経由(詳細=メモリ `myschedule-db-migration`、設計=`docs/DB設計.md`、手順=`docs/構築手順書.md`)
-- **残: カットオーバー**(ユーザーの試用OK後): phase5-db→mainマージ(この時点で旧Pages URL 404化)→GAS.txt削除・Pages無効化・旧GASアーカイブ。それまで旧構成(Pages+スプレッドシート)はロールバック保険(読み取り専用扱い・入力しない)
+- フェーズ1〜3(月グリッド・集計・Googleカレンダー取込)+フェーズ4a〜4e(週ビュー・モバイル実用化・連続日送り・PWA対応・安定化)実装済み
+- **フェーズ5カットオーバー完了(2026-08-02)**: 旧構成(GitHub Pages+GAS JSON API+スプレッドシート)を退役し、Cloudflare Workers+D1へ完全移行。**現行本番 = https://myschedule.toruo1104.workers.dev**。反映は `cd worker && npx wrangler deploy`。カレンダー/Tasks連携はプロキシ専用GASプロジェクト経由(設計=`docs/DB設計.md`、手順=`docs/構築手順書.md`)
+- 旧スプレッドシートはアーカイブ(読み取り専用で温存)。旧GASプロジェクト(スプレッドシート版API)は退役(GitHub Pagesの無効化・旧GASのアーカイブはユーザー操作。復旧が必要な場合は`old/`とgit履歴から可能)
 - 運用面: 第2領域の固定枠はGoogleカレンダー登録済み・運用開始(メモリ `schedule-task-management` 参照)
-- **次: Excel過去データ移行(時間記録.xlsx)は要望が出たら着手**(スマホ閲覧ビューは4b/4cで実質完了)。現時点で計画書なし・未着手
+- **次: Excel過去データ移行(時間記録.xlsx)は要望が出たら着手**。現時点で計画書なし・未着手
 
 ## リフレッシュ時の再開起点
 

@@ -314,7 +314,9 @@ td.is-today { border-right-color: #e8c76a; }
 
 /* 日列群の横スクロール担当。min-width:0でflexアイテムをcontent幅未満に縮めさせ、
    はみ出しをここで確実に横スクロールさせる(無いとcontainer自体が横に広がってしまう) */
-.wk-days-scroller { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; position: relative; }
+/* touch-action: 実際に横パン操作が起きる要素はここ(#week-containerではない)。Androidはスクロール対象
+   要素自身のtouch-actionを見るため、ここに無いとブラウザ標準の2本指ズームにジェスチャを奪われうる */
+.wk-days-scroller { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; position: relative; touch-action: pan-x pan-y; }
 
 /* 日列(連続日送り: 幅はJS側(weekDayColWidth。ピンチズームで可変)がインラインstyleで設定する) */
 .wk-day-col { flex: none; width: 120px; border-right: 1px solid #cdd3da; }

@@ -35,12 +35,12 @@
   var WEEK_DAY_COL_WIDTH = 120;               // 週ビュー(連続日送り): 1日列の幅(px)。既定値。ピンチズームで実行時に変わりうる(localStorageで復元)
   var WEEK_MIN_PX_PER_HOUR = 20;              // 週ビュー: ピンチズーム(縦)の下限
   var WEEK_MAX_PX_PER_HOUR = 120;             // 週ビュー: ピンチズーム(縦)の上限
-  var WEEK_MIN_COL_WIDTH = 70;                // 週ビュー: ピンチズーム(横)の下限
+  var WEEK_MIN_COL_WIDTH = 50;                // 週ビュー: ピンチズーム(横)の下限(ユーザー要望によりデフォルト70の7割相当に縮小)
   var WEEK_MAX_COL_WIDTH = 260;               // 週ビュー: ピンチズーム(横)の上限
   var WEEK_CHUNK_DAYS = 7;                    // 週ビュー: データ取得・描画拡張の単位(日数)
   var WEEK_INITIAL_PAST_DAYS = 7;             // 週ビュー: 初期描画範囲の開始(今日の何日前から)
   var WEEK_INITIAL_FUTURE_DAYS = 14;          // 週ビュー: 初期描画範囲の終端(今日の何日後まで。半開区間の終端)
-  var WEEK_NEAR_EDGE_DAYS = 3;                // 週ビュー: 描画範囲の端からこの日数以内に近づいたら追加読込
+  var WEEK_NEAR_EDGE_DAYS = 5;                 // 週ビュー: 描画範囲の端からこの日数以内に近づいたら追加読込(Androidのフリング慣性を断ち切りにくいよう余裕を広げた)
   var WEEK_MAX_RANGE_DAYS = 42;               // 週ビュー: 描画総日数の上限(超えたら反対側を剥がす)
   var WEEK_MAX_INFLIGHT = 2;                  // 週ビュー: チャンク取得の同時実行数上限
   var WEEK_LABEL_DEBOUNCE_MS = 150;           // 週ビュー: スクロール後のラベル更新デバウンス
@@ -77,6 +77,8 @@
   var weekNowLineTimer = null;                // 現在時刻ラインの更新用setInterval ID(週ビューを離れたらclear)
   var weekLabelDebounceTimer = null;          // ラベル更新のデバウンスタイマー
   var weekPinch = null;                       // 週ビュー: 2本指ピンチ中の状態(開始距離・開始倍率・中点座標など。null=非ピンチ中)
+  var weekStickyEls = null;                   // syncWeekDayHeaderStickyが毎回対象にする.wk-day-head/.wk-day-stripのキャッシュ(nullなら再構築)。
+                                               // DOM構造が変わる箇所(骨格再構築・日列追加削除・innerHTML差し替え)で必ずnull化すること
 
   /* 保存管理 */
   var saveTimer = null;
@@ -197,6 +199,7 @@
     $weekView.hidden = !isWeek;
     document.getElementById("btn-view-month").classList.toggle("is-active", !isWeek);
     document.getElementById("btn-view-week").classList.toggle("is-active", isWeek);
+    document.getElementById("btn-week-reload").disabled = !isWeek; // 月ビュー中は週データの再読込ボタンを無効化(押しても無害だが紛らわしいため)
   }
 
   /* ===== パレットの折りたたみ(スマホで場所を取らないように) ===== */
@@ -721,8 +724,8 @@
       openMemoPopover(td, td.dataset.date, td.dataset.time);
     });
 
-    // グリッドスクロールでポップオーバーの位置が狂うため閉じる
-    $gridContainer.addEventListener("scroll", closePopover);
+    // グリッドスクロールでポップオーバーの位置が狂うため閉じる(preventDefault不要なのでpassiveを明示しAndroidのスクロールを滑らかにする)
+    $gridContainer.addEventListener("scroll", closePopover, { passive: true });
   }
 
   function rectKeys(dragInfo) {
@@ -1390,6 +1393,7 @@
   // 現在のrangeStart/rangeEnd・weekCacheを保ったままDOM(骨格+日列)を組み直す。
   // データ再取得はensureChunksForRange経由(既にreadyなチャンクは即返る=実質no-op)
   function renderWeekGridDom() {
+    weekStickyEls = null; // 骨格ごと作り直すため、疑似stickyの対象要素キャッシュを無効化
     var hourLabels = [];
     for (var m = 0; m < 24 * 60; m += 60) {
       hourLabels.push("<div class='wk-hour-label' style='top:" + weekMinToPx(m) + "px'>" +
@@ -1411,7 +1415,7 @@
       "</div></div>" +
       "</div>";
     $weekDaysScroller = document.getElementById("wk-days-scroller");
-    $weekDaysScroller.addEventListener("scroll", onWeekHorizontalScroll); // scrollは非バブリング。骨格を作り直すたびに再バインドが必要
+    $weekDaysScroller.addEventListener("scroll", onWeekHorizontalScroll, { passive: true }); // scrollは非バブリング。骨格を作り直すたびに再バインドが必要。preventDefault不要なのでpassiveを明示
     var gridEl = $weekGrid.querySelector(".wk-grid");
     var nowLineEl = document.getElementById("wk-now-line");
     var frag = document.createDocumentFragment();
@@ -1637,6 +1641,8 @@
       col.innerHTML = buildDayColumnInner(dateStr);
     }
     $weekTasksNote.hidden = !weekAnyChunkMissingTasks();
+    refreshNowLineState(); // innerHTML差し替えで今日列の●が焼き直されるため、線と同じ計算で上書きし直す
+    weekStickyEls = null; // innerHTML差し替えでhead/stripの要素が作り直されるため疑似stickyの対象要素キャッシュを無効化
     syncWeekDayHeaderSticky(); // innerHTML差し替えで疑似stickyのtransformが失われるため掛け直す
   }
 
@@ -1810,6 +1816,7 @@
     var totalDays = daysBetween(state.rangeStart, state.rangeEnd);
     if (totalDays > WEEK_MAX_RANGE_DAYS) removeWeekDaysFromEnd(totalDays - WEEK_MAX_RANGE_DAYS);
     refreshNowLineState();
+    weekStickyEls = null; // 日列を追加・削除したため疑似stickyの対象要素キャッシュを無効化
     syncWeekDayHeaderSticky(); // 新規追加した日列の疑似stickyを既存のscrollTopに合わせる
   }
 
@@ -1827,6 +1834,7 @@
     var totalDays = daysBetween(state.rangeStart, state.rangeEnd);
     if (totalDays > WEEK_MAX_RANGE_DAYS) removeWeekDaysFromStart(totalDays - WEEK_MAX_RANGE_DAYS);
     refreshNowLineState();
+    weekStickyEls = null; // 日列を追加・削除したため疑似stickyの対象要素キャッシュを無効化
     syncWeekDayHeaderSticky(); // 新規追加した日列の疑似stickyを既存のscrollTopに合わせる
   }
 
@@ -1891,12 +1899,14 @@
   // overflow-x:auto)の子孫にあるため、CSSのposition:stickyは#week-containerまでバブルしない(実機検証済みの
   // ブラウザ制約)。そのため#week-containerのscrollTopぶんだけtranslateYで押し下げ、見た目上のstickyを再現する
   function syncWeekDayHeaderSticky() {
-    var gridEl = $weekGrid.querySelector(".wk-grid");
-    if (!gridEl) return;
+    if (!weekStickyEls) {
+      var gridEl = $weekGrid.querySelector(".wk-grid");
+      if (!gridEl) return;
+      weekStickyEls = gridEl.querySelectorAll(".wk-day-head, .wk-day-strip"); // 縦scrollのたびに呼ばれるため、DOM構造が変わらない間は再クエリしない(低スペック機のジッター軽減)
+    }
     var offset = $weekContainer.scrollTop;
     var transform = offset ? "translateY(" + offset + "px)" : "";
-    var els = gridEl.querySelectorAll(".wk-day-head, .wk-day-strip");
-    for (var i = 0; i < els.length; i++) els[i].style.transform = transform;
+    for (var i = 0; i < weekStickyEls.length; i++) weekStickyEls[i].style.transform = transform;
   }
 
   // 復帰時に日付が変わっていた場合: 描画中の各日列を丸ごと再描画してis-today-col/●(現在時刻ドット)を
@@ -1912,17 +1922,23 @@
       col.innerHTML = buildDayColumnInner(dateStr);
     }
     refreshNowLineState();
+    weekStickyEls = null; // innerHTML差し替えでhead/stripの要素が作り直されるため疑似stickyの対象要素キャッシュを無効化
     syncWeekDayHeaderSticky(); // innerHTML差し替えで疑似stickyのtransformが失われるため掛け直す
   }
 
-  // 今日が現在の描画範囲内にあるかで全幅ラインの表示・タイマーを切り替える
+  // 今日が現在の描画範囲内にあるかで全幅ラインの表示・タイマーを切り替える。
+  // ●(現在時刻ドット)もここで同じweekNowLineTops()呼び出し1回からtopを上書きする(buildDayColumnInnerの
+  // HTML焼き込み値はDOM挿入直後の暫定表示に過ぎず、再描画のたびにここが正として上書きすることで線と●の位相差を無くす
   function refreshNowLineState() {
     var hasToday = state.todayStr >= state.rangeStart && state.todayStr < state.rangeEnd;
     var line = document.getElementById("wk-now-line");
-    if (line) {
-      line.hidden = !hasToday;
-      if (hasToday) line.style.top = weekNowLineTops().lineTop + "px";
+    if (hasToday) {
+      var tops = weekNowLineTops();
+      if (line) line.style.top = tops.lineTop + "px";
+      var dot = document.getElementById("wk-now-dot");
+      if (dot) dot.style.top = tops.dotTop + "px";
     }
+    if (line) line.hidden = !hasToday;
     if (hasToday) startNowLineTimer(); else stopNowLineTimer();
   }
 
@@ -2145,7 +2161,7 @@
 
     // 縦スクロールで: ポップオーバーを閉じる(位置が狂うため。月グリッドと同じ型)/ ラベル更新(150msデバウンス)。
     // 横スクロール分は.wk-days-scrollerの再生成のたびにonWeekHorizontalScrollを再バインドする(renderWeekGridDom)
-    $weekContainer.addEventListener("scroll", onWeekVerticalScroll);
+    $weekContainer.addEventListener("scroll", onWeekVerticalScroll, { passive: true }); // preventDefault不要なのでpassiveを明示
 
     bindWeekZoomGestures();
   }
