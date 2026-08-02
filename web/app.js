@@ -98,8 +98,9 @@
   var $summary = document.getElementById("summary");
   var $weekView = document.getElementById("week-view");
   var $weekLoading = document.getElementById("week-loading");
-  var $weekContainer = document.getElementById("week-container");
+  var $weekContainer = document.getElementById("week-container"); // 縦スクロール専用
   var $weekGrid = document.getElementById("week-grid");
+  var $weekDaysScroller = null; // 横スクロール専用(.wk-days-scroller。renderWeekGridDomで骨格ごと作り直されるため都度再取得する)
   var $weekTasksNote = document.getElementById("week-tasks-note");
   var $palette = document.getElementById("palette");
   var $moreMenu = document.getElementById("more-menu");
@@ -309,6 +310,8 @@
 
   /* ===== サーバー通信 ===== */
 
+  var SERVER_CALL_TIMEOUT_MS = 25000; // fetchがハングした場合でもweekInflight等が枯渇しないようにする上限
+
   function serverCall(fnName) {
     var args = Array.prototype.slice.call(arguments, 1);
     // ローカルプレビュー(mock.js が定義)
@@ -319,11 +322,14 @@
       openSettingsModal();
       return Promise.reject(new Error("API設定が必要です(⚙から設定)"));
     }
+    var controller = ("AbortController" in window) ? new AbortController() : null;
+    var timer = controller ? setTimeout(function () { controller.abort(); }, SERVER_CALL_TIMEOUT_MS) : null;
     return fetch(apiSettings.url, {
       method: "POST",
       // text/plain にすることで CORS preflight を回避(GASの制約)
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ token: apiSettings.token, fn: fnName, args: args })
+      body: JSON.stringify({ token: apiSettings.token, fn: fnName, args: args }),
+      signal: controller ? controller.signal : undefined
     }).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
@@ -332,6 +338,11 @@
         throw new Error(res && res.error ? res.error : "サーバーエラー");
       }
       return res.data;
+    }).catch(function (err) {
+      if (err && err.name === "AbortError") throw new Error("サーバーが応答しません");
+      throw err;
+    }).finally(function () {
+      if (timer) clearTimeout(timer);
     });
   }
 
@@ -1327,8 +1338,8 @@
 
   // 前後ボタン: 7日分をスムーズスクロール(実際の描画範囲拡張・チャンク取得はscrollイベント側で追従)
   function navWeek(delta) {
-    if (!$weekContainer) return;
-    $weekContainer.scrollBy({ left: delta * WEEK_CHUNK_DAYS * WEEK_DAY_COL_WIDTH, behavior: "smooth" });
+    if (!$weekDaysScroller) return;
+    $weekDaysScroller.scrollBy({ left: delta * WEEK_CHUNK_DAYS * WEEK_DAY_COL_WIDTH, behavior: "smooth" });
   }
 
   // 「今日」ボタン: 今日が現在の描画範囲外なら範囲を今日中心に作り直してから、今日の列へスクロール
@@ -1339,6 +1350,7 @@
       scrollToDate(state.todayStr, true);
     }
     $weekContainer.scrollTop = weekInitialScrollTop();
+    syncWeekDayHeaderSticky();
   }
 
   function resetWeekRangeAroundToday() {
@@ -1383,14 +1395,23 @@
       hourLabels.push("<div class='wk-hour-label' style='top:" + weekMinToPx(m) + "px'>" +
         pad2(Math.floor(m / 60)) + ":00</div>");
     }
-    $weekGrid.innerHTML = "<div class='wk-grid'>" +
+    // 2ペイン構造: #week-container(縦スクロール専用)直下の.wk-hwrapを左(時間軸・通常フロー)/
+    // 右(.wk-days-scroller・横スクロール専用)に分ける(sticky時間軸の入れ子2Dスクロール破綻を避けるため)
+    // スナップマーカーは.wk-days-scroller(入れ子スクロールコンテナ)の外に置くこと。
+    // CSS仕様でスナップ領域は「最も近い祖先スクロールコンテナ」に捕捉されるため、
+    // scroller内に置くと#week-containerの縦スナップ(6:00/22:00の一旦停止)が効かなくなる
+    $weekGrid.innerHTML = "<div class='wk-hwrap'>" +
+      "<div class='wk-snap-marker wk-snap-start' id='wk-snap-6'></div>" +
+      "<div class='wk-snap-marker wk-snap-end' id='wk-snap-22'></div>" +
       "<div class='wk-time-axis'><div class='wk-time-axis-head'></div>" +
       "<div class='wk-time-axis-strip'></div>" +
       "<div class='wk-time-axis-body' style='height:" + weekBodyHeight() + "px'>" + hourLabels.join("") + "</div></div>" +
+      "<div class='wk-days-scroller' id='wk-days-scroller'><div class='wk-grid'>" +
       "<div class='wk-now-line' id='wk-now-line' hidden></div>" +
-      "<div class='wk-snap-marker wk-snap-start' id='wk-snap-6'></div>" +
-      "<div class='wk-snap-marker wk-snap-end' id='wk-snap-22'></div>" +
+      "</div></div>" +
       "</div>";
+    $weekDaysScroller = document.getElementById("wk-days-scroller");
+    $weekDaysScroller.addEventListener("scroll", onWeekHorizontalScroll); // scrollは非バブリング。骨格を作り直すたびに再バインドが必要
     var gridEl = $weekGrid.querySelector(".wk-grid");
     var nowLineEl = document.getElementById("wk-now-line");
     var frag = document.createDocumentFragment();
@@ -1411,6 +1432,7 @@
     $weekContainer.scrollTop = weekInitialScrollTop();
     scrollToDate(state.todayStr, false);
     updateWeekLabel();
+    syncWeekDayHeaderSticky();
   }
 
   // 週ビューの初期縦スクロール位置(px)。「今日」ボタン・初期範囲構築は常に今日を含む前提のため
@@ -1421,17 +1443,17 @@
     return hour * WEEK_PX_PER_HOUR;
   }
 
-  // 指定日の列が画面内に来るよう横スクロール(見える範囲の中央寄せ)
+  // 指定日の列が画面内に来るよう横スクロール(見える範囲の中央寄せ)。
+  // .wk-days-scrollerが横スクロールを担うため、そのclientWidthに時間軸ぶんの補正は不要(既に含まれない)
   function scrollToDate(dateStr, smooth) {
-    var axisWidth = 46;
     var index = daysBetween(state.rangeStart, dateStr);
-    var containerWidth = $weekContainer.clientWidth || (axisWidth + WEEK_DAY_COL_WIDTH * 3);
-    var target = index * WEEK_DAY_COL_WIDTH + WEEK_DAY_COL_WIDTH / 2 - (containerWidth - axisWidth) / 2;
+    var containerWidth = $weekDaysScroller.clientWidth || (WEEK_DAY_COL_WIDTH * 3);
+    var target = index * WEEK_DAY_COL_WIDTH + WEEK_DAY_COL_WIDTH / 2 - containerWidth / 2;
     target = Math.max(0, target);
-    if ($weekContainer.scrollTo) {
-      $weekContainer.scrollTo({ left: target, behavior: smooth ? "smooth" : "auto" });
+    if ($weekDaysScroller.scrollTo) {
+      $weekDaysScroller.scrollTo({ left: target, behavior: smooth ? "smooth" : "auto" });
     } else {
-      $weekContainer.scrollLeft = target;
+      $weekDaysScroller.scrollLeft = target;
     }
   }
 
@@ -1498,10 +1520,10 @@
     }
   }
 
-  function ensureChunk(chunkKey) {
+  function ensureChunk(chunkKey, fresh) {
     var entry = weekCache.get(chunkKey);
     if (entry && (entry.status === "ready" || entry.status === "loading" || entry.status === "queued")) return;
-    weekCache.set(chunkKey, { status: "queued" });
+    weekCache.set(chunkKey, { status: "queued", fresh: !!fresh });
     weekFetchQueue.push(chunkKey);
     pumpWeekFetchQueue();
   }
@@ -1511,13 +1533,13 @@
     ensureChunk(chunkKey);
   }
 
-  // ⟳再読込: 現在DOMに描画されている範囲のチャンクをすべて破棄して再取得
+  // ⟳再読込: 現在DOMに描画されている範囲のチャンクをすべて破棄して再取得(Workerのアイソレートキャッシュも無視させる)
   function reloadVisibleWeekChunks() {
     var seen = {};
     var d = state.rangeStart;
     while (d < state.rangeEnd) {
       var key = chunkKeyForDate(d);
-      if (!seen[key]) { seen[key] = true; weekCache.delete(key); ensureChunk(key); }
+      if (!seen[key]) { seen[key] = true; weekCache.delete(key); ensureChunk(key, true); }
       d = addDaysStr(d, 1);
     }
   }
@@ -1527,19 +1549,21 @@
       var key = weekFetchQueue.shift();
       var entry = weekCache.get(key);
       if (!entry || entry.status !== "queued") continue; // reloadで先に破棄・再キュー済みなど
-      startChunkFetch(key);
+      startChunkFetch(key, entry.fresh);
     }
   }
 
-  function startChunkFetch(chunkKey) {
+  function startChunkFetch(chunkKey, fresh) {
     weekInflight++;
     weekCache.set(chunkKey, { status: "loading" });
     renderChunkDates(chunkKey);
     var from = chunkKey;
     var to = addDaysStr(chunkKey, WEEK_CHUNK_DAYS);
-    serverCall("listWeekData", from, to)
+    var call = fresh ? serverCall("listWeekData", from, to, true) : serverCall("listWeekData", from, to);
+    call
       .then(function (data) {
         weekCache.set(chunkKey, { status: "ready", data: data, byDate: buildWeekByDateMap(chunkKey, data), holidays: data.holidays || {}, tasksAvailable: !!data.tasksAvailable });
+        enforceWeekCacheLimit();
       })
       .catch(function (err) {
         handleServerError(err, "週データの読み込みに失敗しました");
@@ -1550,6 +1574,26 @@
         renderChunkDates(chunkKey);
         pumpWeekFetchQueue();
       });
+  }
+
+  var WEEK_CACHE_MAX_ENTRIES = 30; // 週ビュー: チャンクキャッシュ(weekCache)の上限件数
+
+  // weekCacheが上限を超えたら、現在の可視範囲(state.weekAnchor基準)から最も遠いチャンクを削除する。
+  // 取得中(queued/loading)のものは対象外(進行中の取得を壊さないため)
+  function enforceWeekCacheLimit() {
+    if (weekCache.size <= WEEK_CACHE_MAX_ENTRIES) return;
+    var refDate = state.weekAnchor || state.todayStr;
+    var evictable = [];
+    weekCache.forEach(function (entry, key) {
+      if (entry.status === "ready" || entry.status === "error") {
+        evictable.push({ key: key, dist: Math.abs(daysBetween(refDate, key)) });
+      }
+    });
+    evictable.sort(function (a, b) { return b.dist - a.dist; }); // 遠い順
+    var overBy = weekCache.size - WEEK_CACHE_MAX_ENTRIES;
+    for (var i = 0; i < overBy && i < evictable.length; i++) {
+      weekCache.delete(evictable[i].key);
+    }
   }
 
   function buildWeekByDateMap(chunkKey, data) {
@@ -1577,16 +1621,23 @@
     return byDate;
   }
 
-  // 対象チャンクの日付に対応するDOM(既に描画範囲内にあるもの)を再描画する
+  // 対象チャンクの日付に対応するDOM(既に描画範囲内にあるもの)を再描画する。
+  // 同一内容の再描画によるチラつき防止のため、直前と同じstatusでの再描画はスキップする(可能な範囲で)
   function renderChunkDates(chunkKey) {
     var gridEl = $weekGrid.querySelector(".wk-grid");
     if (!gridEl) return;
+    var entry = weekCache.get(chunkKey);
+    var status = entry ? entry.status : "";
     for (var i = 0; i < WEEK_CHUNK_DAYS; i++) {
       var dateStr = addDaysStr(chunkKey, i);
       var col = gridEl.querySelector(".wk-day-col[data-date='" + dateStr + "']");
-      if (col) col.innerHTML = buildDayColumnInner(dateStr);
+      if (!col) continue;
+      if (col.dataset.wkStatus === status) continue;
+      col.dataset.wkStatus = status;
+      col.innerHTML = buildDayColumnInner(dateStr);
     }
     $weekTasksNote.hidden = !weekAnyChunkMissingTasks();
+    syncWeekDayHeaderSticky(); // innerHTML差し替えで疑似stickyのtransformが失われるため掛け直す
   }
 
   // タスク欄の案内(未設定)は、いま画面に読み込み済みのチャンクのどれかがtasksAvailable:falseなら出す
@@ -1727,16 +1778,16 @@
 
   /* ===== 週ビュー: 連続描画範囲の拡張・剥がし(横スクロール追従) ===== */
 
-  // スクロールで描画範囲の端に近づいたら7日分追加。42日を超えたら反対側を7日分剥がす
+  // スクロールで描画範囲の端に近づいたら7日分追加。42日を超えたら反対側を7日分剥がす。
+  // .wk-days-scrollerが横スクロールを担うため、そのscrollLeft/clientWidthを見る(時間軸ぶんの補正は不要)
   function maybeExpandWeekRange() {
     var gridEl = $weekGrid.querySelector(".wk-grid");
     if (!gridEl) return;
-    var axisWidth = 46;
-    var scrollLeft = $weekContainer.scrollLeft;
-    var containerWidth = $weekContainer.clientWidth;
+    var scrollLeft = $weekDaysScroller.scrollLeft;
+    var containerWidth = $weekDaysScroller.clientWidth;
     var totalDays = daysBetween(state.rangeStart, state.rangeEnd);
     var leftIndex = Math.floor(scrollLeft / WEEK_DAY_COL_WIDTH);
-    var rightIndex = Math.floor((scrollLeft + containerWidth - axisWidth - 1) / WEEK_DAY_COL_WIDTH);
+    var rightIndex = Math.floor((scrollLeft + containerWidth - 1) / WEEK_DAY_COL_WIDTH);
 
     if (leftIndex < WEEK_NEAR_EDGE_DAYS) prependWeekDays(WEEK_CHUNK_DAYS);
     if (totalDays - 1 - rightIndex < WEEK_NEAR_EDGE_DAYS) appendWeekDays(WEEK_CHUNK_DAYS);
@@ -1749,14 +1800,17 @@
     var frag = document.createDocumentFragment();
     for (var i = 0; i < n; i++) frag.appendChild(buildDayColumnEl(addDaysStr(newStart, i)));
     var firstCol = gridEl.querySelector(".wk-day-col");
-    gridEl.insertBefore(frag, firstCol || gridEl.querySelector(".wk-time-axis").nextSibling);
+    // .wk-grid直下は日列以外に now-line/snap-markerのみ(時間軸は別ペインに移動済み)なので、
+    // 日列が1つも無ければ.wk-gridの先頭に挿す
+    gridEl.insertBefore(frag, firstCol || gridEl.firstChild);
     state.rangeStart = newStart;
-    $weekContainer.scrollLeft += n * WEEK_DAY_COL_WIDTH; // 追加分だけ補正し、可視位置を飛ばさない
+    $weekDaysScroller.scrollLeft += n * WEEK_DAY_COL_WIDTH; // 追加分だけ補正し、可視位置を飛ばさない
     ensureChunksForRange(newStart, addDaysStr(newStart, n));
 
     var totalDays = daysBetween(state.rangeStart, state.rangeEnd);
     if (totalDays > WEEK_MAX_RANGE_DAYS) removeWeekDaysFromEnd(totalDays - WEEK_MAX_RANGE_DAYS);
     refreshNowLineState();
+    syncWeekDayHeaderSticky(); // 新規追加した日列の疑似stickyを既存のscrollTopに合わせる
   }
 
   function appendWeekDays(n) {
@@ -1773,6 +1827,7 @@
     var totalDays = daysBetween(state.rangeStart, state.rangeEnd);
     if (totalDays > WEEK_MAX_RANGE_DAYS) removeWeekDaysFromStart(totalDays - WEEK_MAX_RANGE_DAYS);
     refreshNowLineState();
+    syncWeekDayHeaderSticky(); // 新規追加した日列の疑似stickyを既存のscrollTopに合わせる
   }
 
   function removeWeekDaysFromEnd(n) {
@@ -1789,19 +1844,22 @@
     var cols = gridEl.querySelectorAll(".wk-day-col");
     for (var i = 0; i < n && i < cols.length; i++) cols[i].remove();
     state.rangeStart = addDaysStr(state.rangeStart, n);
-    $weekContainer.scrollLeft -= n * WEEK_DAY_COL_WIDTH; // 剥がした分だけ補正し、可視位置を飛ばさない
+    $weekDaysScroller.scrollLeft -= n * WEEK_DAY_COL_WIDTH; // 剥がした分だけ補正し、可視位置を飛ばさない
   }
 
   /* ===== 週ビュー: 可視範囲ラベル(スクロールに追従) ===== */
 
+  // .wk-days-scrollerが横スクロールを担うため、そのscrollLeft/clientWidthを見る(時間軸ぶんの補正は不要)。
+  // init()のrenderYmLabel()はbuildWeekGridSkeleton(初回renderWeekGridDom)より前に呼ばれるため、
+  // まだ.wk-days-scrollerが存在しない(骨格未構築)場合は何もしない
   function updateWeekLabel() {
-    var axisWidth = 46;
-    var scrollLeft = $weekContainer.scrollLeft;
-    var containerWidth = $weekContainer.clientWidth;
+    if (!$weekDaysScroller) return;
+    var scrollLeft = $weekDaysScroller.scrollLeft;
+    var containerWidth = $weekDaysScroller.clientWidth;
     var totalDays = daysBetween(state.rangeStart, state.rangeEnd);
     if (totalDays <= 0 || !containerWidth) return;
     var leftIndex = clamp(Math.floor(scrollLeft / WEEK_DAY_COL_WIDTH), 0, totalDays - 1);
-    var rightIndex = clamp(Math.floor((scrollLeft + containerWidth - axisWidth - 1) / WEEK_DAY_COL_WIDTH), 0, totalDays - 1);
+    var rightIndex = clamp(Math.floor((scrollLeft + containerWidth - 1) / WEEK_DAY_COL_WIDTH), 0, totalDays - 1);
     var leftDate = addDaysStr(state.rangeStart, leftIndex);
     var rightDate = addDaysStr(state.rangeStart, rightIndex);
     state.weekAnchor = leftDate;
@@ -1827,6 +1885,34 @@
   function weekNowLineTops() {
     var min = nowMinutesOfDay();
     return { lineTop: weekLineTopPx(min), dotTop: weekMinToPx(min) };
+  }
+
+  // 曜日ヘッダー・終日/タスク帯の疑似sticky。.wk-day-head/.wk-day-strip は .wk-days-scroller(横スクロール用の
+  // overflow-x:auto)の子孫にあるため、CSSのposition:stickyは#week-containerまでバブルしない(実機検証済みの
+  // ブラウザ制約)。そのため#week-containerのscrollTopぶんだけtranslateYで押し下げ、見た目上のstickyを再現する
+  function syncWeekDayHeaderSticky() {
+    var gridEl = $weekGrid.querySelector(".wk-grid");
+    if (!gridEl) return;
+    var offset = $weekContainer.scrollTop;
+    var transform = offset ? "translateY(" + offset + "px)" : "";
+    var els = gridEl.querySelectorAll(".wk-day-head, .wk-day-strip");
+    for (var i = 0; i < els.length; i++) els[i].style.transform = transform;
+  }
+
+  // 復帰時に日付が変わっていた場合: 描画中の各日列を丸ごと再描画してis-today-col/●(現在時刻ドット)を
+  // 付け替える(buildDayColumnInnerが内部でstate.todayStrを見て今日判定するため、これだけで済む)
+  function rebuildWeekTodayMarkers() {
+    var gridEl = $weekGrid.querySelector(".wk-grid");
+    if (!gridEl) return;
+    var cols = gridEl.querySelectorAll(".wk-day-col");
+    for (var i = 0; i < cols.length; i++) {
+      var col = cols[i];
+      var dateStr = col.dataset.date;
+      col.classList.toggle("is-today-col", dateStr === state.todayStr);
+      col.innerHTML = buildDayColumnInner(dateStr);
+    }
+    refreshNowLineState();
+    syncWeekDayHeaderSticky(); // innerHTML差し替えで疑似stickyのtransformが失われるため掛け直す
   }
 
   // 今日が現在の描画範囲内にあるかで全幅ラインの表示・タイマーを切り替える
@@ -1887,7 +1973,7 @@
         startDistX: distX, startDistY: distY,
         startPxPerHour: WEEK_PX_PER_HOUR, startColWidth: WEEK_DAY_COL_WIDTH,
         anchorClientX: midX, anchorClientY: midY,
-        startScrollLeft: $weekContainer.scrollLeft, startScrollTop: $weekContainer.scrollTop,
+        startScrollLeft: $weekDaysScroller.scrollLeft, startScrollTop: $weekContainer.scrollTop,
         previewScale: 1
       };
       gridEl.style.transformOrigin = (midX - rect.left) + "px " + (midY - rect.top) + "px";
@@ -1935,27 +2021,30 @@
     rerenderWeekGridForZoom(anchor);
   }
 
-  // ピンチ中点付近の「日・時刻」が画面上の同じ位置に留まるよう、新しい倍率でscrollLeft/scrollTopを補正しつつ再描画する
+  // ピンチ中点付近の「日・時刻」が画面上の同じ位置に留まるよう、新しい倍率でscrollLeft/scrollTopを補正しつつ再描画する。
+  // 横方向は.wk-days-scroller基準(時間軸を含まないため、旧axisWidthオフセットは不要)、
+  // 縦方向は#week-container基準(座標系はheader/strip分のオフセットを含め従来どおり)
   function rerenderWeekGridForZoom(anchor) {
-    var axisWidth = 46;
     var containerRect = $weekContainer.getBoundingClientRect();
-    var oldLocalX = anchor.startScrollLeft + (anchor.anchorClientX - containerRect.left);
+    var daysRect = $weekDaysScroller.getBoundingClientRect();
+    var oldLocalX = anchor.startScrollLeft + (anchor.anchorClientX - daysRect.left);
     var oldLocalY = anchor.startScrollTop + (anchor.anchorClientY - containerRect.top);
 
     var newLocalX = oldLocalX;
     var newLocalY = oldLocalY;
     if (anchor.mode === "h" && anchor.startColWidth > 0) {
       var ratioX = WEEK_DAY_COL_WIDTH / anchor.startColWidth;
-      newLocalX = oldLocalX <= axisWidth ? oldLocalX : axisWidth + (oldLocalX - axisWidth) * ratioX;
+      newLocalX = oldLocalX * ratioX;
     } else if (anchor.mode === "v" && anchor.startPxPerHour > 0) {
       var oldMinutes = (oldLocalY - WEEK_HEAD_HEIGHT - WEEK_STRIP_HEIGHT) / (anchor.startPxPerHour / 60);
       newLocalY = WEEK_HEAD_HEIGHT + WEEK_STRIP_HEIGHT + oldMinutes * (WEEK_PX_PER_HOUR / 60);
     }
 
-    renderWeekGridDom();
+    renderWeekGridDom(); // $weekDaysScrollerを新しいDOMで再取得し直す(骨格ごと作り直されるため)
 
-    $weekContainer.scrollLeft = Math.max(0, newLocalX - (anchor.anchorClientX - containerRect.left));
+    $weekDaysScroller.scrollLeft = Math.max(0, newLocalX - (anchor.anchorClientX - daysRect.left));
     $weekContainer.scrollTop = Math.max(0, newLocalY - (anchor.anchorClientY - containerRect.top));
+    syncWeekDayHeaderSticky();
   }
 
   /* ===== 週ビュー: タップで詳細ポップオーバー(読み取り専用) ===== */
@@ -1999,6 +2088,52 @@
 
   /* ===== 週ビュー: イベント束ね(タップ詳細・再試行・スクロール追従) ===== */
 
+  // ラベル更新(150msデバウンス。横/縦どちらのスクロールでも呼ぶ)。スクロール停止時のこのタイミングで
+  // 可視チャンクの取得優先度も上げる(体感速度優先)
+  function scheduleWeekLabelUpdate() {
+    if (weekLabelDebounceTimer) clearTimeout(weekLabelDebounceTimer);
+    weekLabelDebounceTimer = setTimeout(function () {
+      updateWeekLabel();
+      prioritizeVisibleWeekChunks();
+    }, WEEK_LABEL_DEBOUNCE_MS);
+  }
+
+  // 可視範囲(現在の描画範囲のうち画面に映っている日)に対応するチャンクキーをweekFetchQueueの先頭へ
+  // 並べ替える(取得中=queue外のものはそのまま)。listなので取得中inflightには影響しない
+  function prioritizeVisibleWeekChunks() {
+    if (!weekFetchQueue.length || !$weekDaysScroller) return;
+    var scrollLeft = $weekDaysScroller.scrollLeft;
+    var containerWidth = $weekDaysScroller.clientWidth;
+    var totalDays = daysBetween(state.rangeStart, state.rangeEnd);
+    if (totalDays <= 0 || !containerWidth) return;
+    var leftIndex = clamp(Math.floor(scrollLeft / WEEK_DAY_COL_WIDTH), 0, totalDays - 1);
+    var rightIndex = clamp(Math.floor((scrollLeft + containerWidth - 1) / WEEK_DAY_COL_WIDTH), 0, totalDays - 1);
+    var visibleKeys = {};
+    for (var i = leftIndex; i <= rightIndex; i++) {
+      visibleKeys[chunkKeyForDate(addDaysStr(state.rangeStart, i))] = true;
+    }
+    var priority = [], rest = [];
+    weekFetchQueue.forEach(function (key) {
+      (visibleKeys[key] ? priority : rest).push(key);
+    });
+    weekFetchQueue = priority.concat(rest);
+  }
+
+  // .wk-days-scroller(横スクロール)のイベント。骨格を作り直すたびに要素ごと作り直されるため
+  // (scrollイベントは非バブリングでdelegate不可)、renderWeekGridDom側で都度再バインドする
+  function onWeekHorizontalScroll() {
+    closePopover();
+    maybeExpandWeekRange();
+    scheduleWeekLabelUpdate();
+  }
+
+  // #week-container(縦スクロール)のイベント。要素自体は不変なのでbindWeekEventsで一度だけバインドする
+  function onWeekVerticalScroll() {
+    syncWeekDayHeaderSticky(); // 疑似stickyはスクロールのたびに即時追従させる(デバウンスしない)
+    closePopover();
+    scheduleWeekLabelUpdate();
+  }
+
   function bindWeekEvents() {
     $weekGrid.addEventListener("click", function (ev) {
       var retryBtn = ev.target.closest(".wk-day-retry");
@@ -2008,14 +2143,9 @@
       openWeekDetailPopover(el);
     });
 
-    // 横スクロールで: ポップオーバーを閉じる(位置が狂うため。月グリッドと同じ型)/ 描画範囲の拡張判定 /
-    // ラベル更新(150msデバウンス)
-    $weekContainer.addEventListener("scroll", function () {
-      closePopover();
-      maybeExpandWeekRange();
-      if (weekLabelDebounceTimer) clearTimeout(weekLabelDebounceTimer);
-      weekLabelDebounceTimer = setTimeout(updateWeekLabel, WEEK_LABEL_DEBOUNCE_MS);
-    });
+    // 縦スクロールで: ポップオーバーを閉じる(位置が狂うため。月グリッドと同じ型)/ ラベル更新(150msデバウンス)。
+    // 横スクロール分は.wk-days-scrollerの再生成のたびにonWeekHorizontalScrollを再バインドする(renderWeekGridDom)
+    $weekContainer.addEventListener("scroll", onWeekVerticalScroll);
 
     bindWeekZoomGestures();
   }
@@ -2131,12 +2261,31 @@
         ev.returnValue = "";
       }
     });
+
+    // 復帰時(スリープ・バックグラウンドからの復帰)の追従: (a)現在時刻ライン位置の更新は常に行う。
+    // (b)日付が変わっていれば todayStr を更新し、表示中のビューの「今日」枠を付け替える
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState !== "visible") return;
+      updateNowLinePosition();
+      var freshToday = ymdOf(new Date());
+      if (freshToday === state.todayStr) return;
+      state.todayStr = freshToday;
+      if (state.view === "week") rebuildWeekTodayMarkers();
+      else renderGrid();
+    });
   }
 
   /* ===== トースト ===== */
 
   var toastTimer = null;
+  var lastToastMsg = "";
+  var lastToastAt = 0;
+  var TOAST_DEDUPE_MS = 5000; // 同一メッセージのトースト連発抑止(タイムアウト頻発時のスパム防止)
   function showToast(msg, isError) {
+    var now = Date.now();
+    if (msg === lastToastMsg && (now - lastToastAt) < TOAST_DEDUPE_MS) return;
+    lastToastMsg = msg;
+    lastToastAt = now;
     $toast.textContent = msg;
     $toast.classList.toggle("is-error", !!isError);
     $toast.hidden = false;

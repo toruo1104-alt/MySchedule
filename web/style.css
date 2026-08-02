@@ -269,14 +269,15 @@ td.is-today { border-right-color: #e8c76a; }
 /* ===== 週ビュー(読み取り専用) ===== */
 
 #week-view { margin-top: 8px; }
-/* 画面いっぱいに使う(スマホ常用を想定)。dvh未対応環境はvhにフォールバック */
+/* 画面いっぱいに使う(スマホ常用を想定)。#week-containerは縦スクロール専用(横スクロールは
+   .wk-days-scroller側が持つ。入れ子stickyの破綻を避けるための2ペイン構造)。svh未対応環境はvhにフォールバック */
 #week-container {
-  position: relative; overflow: auto;
+  position: relative; overflow-y: auto; overflow-x: hidden;
   height: calc(100vh - 130px);
-  height: calc(100dvh - 130px);
+  height: calc(100svh - 130px);
   background: #fff; border: 1px solid #b5bcc4;
   max-width: 100%;
-  /* 縦=通常スクロール+6:00/22:00でのスナップ、横=通常スクロール。
+  /* 縦=通常スクロール+6:00/22:00でのスナップ。
      ブラウザ標準のピンチズームはJS側(2本指ジェスチャ)で処理するため既定ジェスチャは抑止する */
   scroll-snap-type: y proximity;
   touch-action: pan-x pan-y;
@@ -288,7 +289,10 @@ td.is-today { border-right-color: #e8c76a; }
   font-weight: bold; z-index: 20;
 }
 
-/* 連続日送り: 日列を横に連続配置してcontainerの横スクロールそのもので日を移動する */
+/* #week-container直下: 左=時間軸(通常フロー)・右=横スクロールする日列群、の2ペイン */
+.wk-hwrap { display: flex; position: relative; }
+
+/* 連続日送り: 日列を横に連続配置し、.wk-days-scrollerの横スクロールそのもので日を移動する */
 .wk-grid { display: flex; position: relative; }
 
 .wk-error { padding: 24px 12px; text-align: center; color: #667; }
@@ -298,19 +302,29 @@ td.is-today { border-right-color: #e8c76a; }
 .wk-snap-marker.wk-snap-start { scroll-snap-align: start; scroll-snap-stop: always; }
 .wk-snap-marker.wk-snap-end { scroll-snap-align: end; scroll-snap-stop: always; }
 
-/* 左端の時間軸(左sticky)。見出し部分は縦スクロールでも上にsticky(曜日ヘッダーと二重固定) */
-.wk-time-axis { width: 46px; min-width: 46px; flex: none; position: sticky; left: 0; z-index: 16; background: #edf0f4; border-right: 1px solid #9aa2ac; }
+/* 左端の時間軸。.wk-days-scrollerの横スクロールの外(通常フロー)にあるため、横スクロールしても
+   絶対にズレない・隠れない。見出し部分は縦スクロールでも上にsticky(曜日ヘッダーと二重固定、
+   基準は#week-container) */
+.wk-time-axis { width: 46px; min-width: 46px; flex: none; background: #edf0f4; border-right: 1px solid #9aa2ac; }
 .wk-time-axis-head { position: sticky; top: 0; z-index: 16; height: 32px; border-bottom: 2px solid #9aa2ac; background: #edf0f4; }
 /* 日列側の wk-day-strip(固定高)と縦位置を揃えるための空スペーサー。無いと時刻ラベルが日列のイベントよりstrip分だけ上にズレる */
 .wk-time-axis-strip { position: sticky; top: 32px; z-index: 16; height: 26px; background: #edf0f4; border-bottom: 1px solid #e2e6ea; box-sizing: border-box; }
 .wk-time-axis-body { position: relative; }
 .wk-hour-label { position: absolute; left: 2px; transform: translateY(-50%); font-size: 10px; color: #445; white-space: nowrap; }
 
+/* 日列群の横スクロール担当。min-width:0でflexアイテムをcontent幅未満に縮めさせ、
+   はみ出しをここで確実に横スクロールさせる(無いとcontainer自体が横に広がってしまう) */
+.wk-days-scroller { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; position: relative; }
+
 /* 日列(連続日送り: 幅はJS側(weekDayColWidth。ピンチズームで可変)がインラインstyleで設定する) */
 .wk-day-col { flex: none; width: 120px; border-right: 1px solid #cdd3da; }
-/* 曜日ヘッダー・終日/タスク帯は縦スクロールで上にsticky(下にwk-day-bodyが流れる) */
+/* 曜日ヘッダー・終日/タスク帯: 縦スクロールで上に固定表示させたいが、.wk-days-scroller(横スクロール用の
+   overflow-x:auto)が間にあると position:sticky は #week-container まで届かない(ネストした
+   スクロールコンテナ配下でstickyがバブルしない、実機検証済みの制約)。そのためCSS stickyではなく
+   JS(syncWeekDayHeaderSticky)がtransform: translateYで#week-containerのscrollTopぶん押し下げて
+   疑似sticky化する */
 .wk-day-head {
-  position: sticky; top: 0; z-index: 12;
+  position: relative; z-index: 12;
   height: 32px; padding: 4px; box-sizing: border-box;
   display: flex; align-items: center; justify-content: center;
   border-bottom: 2px solid #9aa2ac; background: #edf0f4;
@@ -322,7 +336,7 @@ td.is-today { border-right-color: #e8c76a; }
 /* 固定高(WEEK_STRIP_HEIGHT=26pxとJS側で一致させる)。全列で高さを揃え、現在時刻ラインのズレを防ぐ。
    はみ出したバッジは縦スクロールで読める(全文はタップ詳細で確認) */
 .wk-day-strip {
-  position: sticky; top: 32px; z-index: 11;
+  position: relative; z-index: 11;
   height: 26px; overflow-y: auto;
   padding: 2px 3px; border-bottom: 1px solid #e2e6ea; background: #fafbfc;
   box-sizing: border-box;
@@ -374,9 +388,10 @@ td.is-today { border-right-color: #e8c76a; }
 }
 .wk-ev-time { font-size: 9px; color: #667; }
 
-/* 現在時刻ライン(今日を含む週のみ描画。sticky見出しより低いz-indexにして、スクロールで見出しの下に隠れるようにする) */
+/* 現在時刻ライン(今日を含む週のみ描画。.wk-days-scroller内の全幅なので時間軸ぶんのオフセットは不要。
+   sticky見出しより低いz-indexにして、スクロールで見出しの下に隠れるようにする) */
 .wk-now-line {
-  position: absolute; left: 46px; right: 0; height: 2px;
+  position: absolute; left: 0; right: 0; height: 2px;
   background: #ea4335; z-index: 8; pointer-events: none;
 }
 .wk-now-dot {
@@ -391,7 +406,7 @@ td.is-today { border-right-color: #e8c76a; }
 .wk-day-head.day-paidleave, .wk-day-body.day-paidleave { background: #faf3d1; }
 
 @media (max-width: 700px) {
-  #week-container { height: calc(100vh - 110px); height: calc(100dvh - 110px); }
+  #week-container { height: calc(100vh - 110px); height: calc(100svh - 110px); }
 }
 
 /* ===== 集計パネル ===== */
