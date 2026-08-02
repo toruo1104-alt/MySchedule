@@ -1,26 +1,29 @@
 ---
 name: myschedule-dev
 description: >
-  MySchedule(個人スケジュール管理アプリ: GitHub Pages+GAS API+スプレッドシート)の開発時に使う。
-  index.html / style.css / app.js / GAS.txt / docs/仕様書.md を触るとき、グリッド・区分・塗り操作・
-  集計・保存・祝日・API認証・カレンダー取込に関わる作業のとき、明示的に頼まれていなくても
-  積極的に発動すること。
+  MySchedule(個人スケジュール管理アプリ: Cloudflare Workers+D1+GASプロキシ)の開発時に使う。
+  web/(index.html/style.css/app.js) / worker/ / gas/calendar_proxy.gs / docs/仕様書.md を触るとき、
+  グリッド・週ビュー・区分・塗り操作・集計・保存・祝日・API認証・カレンダー取込に関わる作業のとき、
+  明示的に頼まれていなくても積極的に発動すること。
 ---
 
 # MySchedule 開発ガイド
 
 ## 全体像
 
-GitHub Pages(フロント) + GAS JSON API + スプレッドシート(データ)の個人用スケジュール管理アプリ。
+Cloudflare Workers(Static Assetsでフロント配信+/api) + D1(SQLite、データ) + GASプロキシ(カレンダー/Tasks窓口)の
+個人用スケジュール管理アプリ。本番 = https://myschedule.toruo1104.workers.dev
 **仕様(what)は [docs/仕様書.md](../../../docs/仕様書.md) が正** — コードを変える前に該当節を読む。
 特に「3. システム構成・通信(トークン認証)」「5. データモデル(変更禁止事項)」「7. UX統一ルール」は遵守対象。
+バックエンド設計の詳細は docs/DB設計.md、構築・運用は docs/構築手順書.md。
 
 ## 黄金ルール
 
-- **Publicリポジトリ**: トークン・GAS URL・個人データをコード/コミットに絶対に含めない
-  (API設定はlocalStorage、トークンは設定シートが正)
-- 列の挿入・順序変更は禁止(追加は末尾のみ)。記録A:B・日次A・祝日A列はテキスト書式固定
-- 日付は `yyyy-MM-dd`、時刻は `HH:mm` の文字列。Date型を状態に持ち込まない
+- **Publicリポジトリ**: トークン・URL・個人データをコード/コミットに絶対に含めない
+  (API設定はlocalStorage、API_TOKEN/GAS_URL/GAS_TOKENはWorkers Secret、.dev.vars/scripts/out/はgitignore)
+- スキーマ変更は `worker/migrations/` に新規SQL追加のみ(適用済みマイグレーションの書き換え禁止)
+- 日付は `yyyy-MM-dd`、時刻は `HH:mm` の文字列。Date型を状態に持ち込まない。SQLは必ず prepare().bind()
+- API契約({token,fn,args}/{ok,data}|{ok,error}封筒・fn名・出力キー)は互換を守る
 - 新しい操作を追加するときは保存の型(楽観更新→dirty→デバウンス→ステータス表示)と
   Escルール(最前面から1つずつ閉じる)に乗せてから完成とする
 - YAGNI: 頼まれていない抽象化・リファクタはしない
@@ -30,12 +33,16 @@ GitHub Pages(フロント) + GAS JSON API + スプレッドシート(データ)�
 
 1. **変更前バックアップ**: 対象ファイルを `old/yyyyMMdd_説明/` にコピーしてから編集(git併用でも従来流儀を維持)
 2. **編集**: 大きめの変更は `careful-large-file-edits` の手順(grep→直前Read→一意なold_stringで最小差分)
-3. **検証(ローカル)**: プレビューサーバー(`myschedule-preview`、ポート8766)で
-   `http://localhost:8766/preview/index.html` を開く。mock.js が `__MYSCHEDULE_MOCK__` でAPIを偽装する
+3. **検証(ローカル)**:
+   - フロントのみ: プレビューサーバー(`myschedule-preview`、ポート8766)で
+     `http://localhost:8766/preview/index.html`。mock.js が `__MYSCHEDULE_MOCK__` でAPIを偽装する
+   - worker込み: `cd worker && npx wrangler dev --local`(+初回 `d1 migrations apply DB --local`)→
+     `node worker/test/smoke.mjs` を**連続2回**(冪等性ごと確認。ローカルD1はsmokeが初期状態にリセットする)
 4. **引き渡し**(`change-handoff-checklist` 準拠):
-   - フロント変更 → `git add/commit/push`(Pagesに数十秒〜数分で反映。確認はスーパーリロード)
-   - `GAS.txt` 変更 → ユーザーにGASエディタへの貼り替え+「デプロイを管理→**新バージョン**」を案内
-   - 両方変えたときは両方の手順を明示する
+   - web/・worker/ の変更 → `git add/commit/push` + `cd worker && npx wrangler deploy`(即時反映)
+   - `gas/calendar_proxy.gs` 変更 → ユーザーにプロキシ専用GASプロジェクトへの貼り替え+
+     「デプロイを管理→**新バージョン**」を案内(URLは変わらない)
+   - シークレット変更(`wrangler secret put`)は反映に数十秒の伝播遅延がある(即時の認証エラーで慌てない)
 
 ## 既知の落とし穴
 
