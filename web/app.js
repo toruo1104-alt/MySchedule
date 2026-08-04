@@ -1559,9 +1559,22 @@
     return !!(window.matchMedia && window.matchMedia("(max-width: " + WEEK_NARROW_MAX_WIDTH + "px)").matches);
   }
 
+  // 画面幅700px未満: 列分割の代わりに、時間が重なるクラスタ内でのみ連番(stackIndex)を振ってオフセット。
+  // 重ならないカードはクラスタが変わるたびstackIndex=0にリセットされ、素の位置のまま描画される
   function layoutCardEventsStacked(evList) {
     var sorted = evList.slice().sort(function (a, b) { return a.startMin - b.startMin; });
-    return sorted.map(function (ev, i) { return { ev: ev, stackIndex: i }; });
+    var out = [];
+    var cur = null;
+    sorted.forEach(function (ev) {
+      if (cur && ev.startMin < cur.maxEnd) {
+        cur.count++;
+        cur.maxEnd = Math.max(cur.maxEnd, ev.endMin);
+      } else {
+        cur = { count: 0, maxEnd: ev.endMin };
+      }
+      out.push({ ev: ev, stackIndex: cur.count });
+    });
+    return out;
   }
 
   /* ===== 週ビュー: データ取得(7日チャンク単位・同時実行数を絞る) ===== */
@@ -1802,8 +1815,10 @@
       var style;
       if (l.stackIndex != null) {
         top += l.stackIndex * 6;
-        var leftPct = 15 + l.stackIndex * 6;
-        style = "top:" + top + "px;height:" + height + "px;left:" + leftPct + "%;width:85%;z-index:" + (2 + l.stackIndex) + ";" +
+        // 左右方向は5段でクランプ(left+width=100を維持し、右端が列内に収まるようにする)
+        var shift = Math.min(l.stackIndex, 5) * 6;
+        var leftPct = 15 + shift;
+        style = "top:" + top + "px;height:" + height + "px;left:" + leftPct + "%;width:" + (85 - shift) + "%;z-index:" + (2 + Math.min(l.stackIndex, 5)) + ";" +
           weekColorStyle(ev.color, "card");
       } else {
         var areaLeft = 15, areaWidth = 85;
